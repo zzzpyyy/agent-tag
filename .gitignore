@@ -1,0 +1,14 @@
+# Local runtime state and credentials
+.agent-tag/
+
+# Local build outputs
+bin/
+agent-tag
+
+# OS and editor files
+.DS_Store
+*.swp
+
+# Test and coverage outputs
+coverage.out
+*.test
