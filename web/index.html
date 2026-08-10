@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#ffffff" />
+    <title>Agent Tag · 多智能体讨论室</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <section class="auth-view" id="auth-view" hidden>
+      <div class="auth-card">
+        <div class="auth-brand"><span class="brand-mark">A</span><span>Agent Tag</span></div>
+        <nav class="auth-tabs" aria-label="账号操作">
+          <button class="active" id="auth-login-tab" type="button">登录</button>
+          <button id="auth-register-tab" type="button">注册</button>
+        </nav>
+        <form id="auth-form">
+          <h1 id="auth-title">登录本地团队</h1>
+          <p id="auth-description">每个账号拥有独立的对话、消息与设置。</p>
+          <label>账号<input id="auth-username" autocomplete="username" maxlength="40" required /></label>
+          <label>密码<input id="auth-password" type="password" autocomplete="current-password" minlength="8" maxlength="200" required /></label>
+          <p class="auth-error" id="auth-error" hidden></p>
+          <button class="auth-submit" id="auth-submit" type="submit">登录</button>
+        </form>
+      </div>
+    </section>
+
+    <main class="shell" id="app-shell" hidden>
+      <aside class="rail">
+        <div class="brand"><span class="brand-mark">A</span><span>Agent Tag</span></div>
+        <button class="new-chat" id="new-chat"><span>＋</span> 新建对话</button>
+        <button class="global-settings-entry" id="global-settings" type="button"><span>⌁</span> 全局设置</button>
+        <button class="global-settings-entry" id="tab-skills" type="button"><span>◇</span> Skills</button>
+        <button class="global-settings-entry" id="tab-tasks" type="button"><span>✓</span> 任务看板</button>
+        <p class="section-label">对话</p>
+        <nav id="conversation-list" class="conversation-list"></nav>
+        <button class="archived-toggle" id="archived-toggle" type="button">已归档 <span id="archived-count">0</span></button>
+        <nav id="archived-conversation-list" class="conversation-list archived-list" hidden></nav>
+        <div class="rail-foot"><span class="account-avatar" id="account-avatar">U</span><span class="account-copy"><b id="account-name">账号</b><small id="team-name">本地团队</small></span><button id="logout" type="button" title="退出登录">↗</button></div>
+      </aside>
+
+      <section class="chat">
+        <header class="chat-head">
+          <div>
+            <h1 id="conversation-title">选择或新建一个对话</h1>
+          </div>
+          <div class="head-actions">
+            <button class="conversation-settings" id="conversation-manage" type="button" aria-label="管理当前对话" title="管理当前对话">•••</button>
+            <button class="conversation-settings" id="conversation-skills" type="button" aria-label="管理 Skills" title="管理 Skills">◇</button>
+            <button class="conversation-settings" id="conversation-settings" type="button" aria-label="当前会话设置" title="当前会话设置">⌁</button>
+            <label class="relay-toggle" id="relay-toggle" title="首次 @ Agent 回复后可开启">
+              <input type="checkbox" id="relay-switch" />
+              <span class="toggle-track"><i></i></span>
+              <span>并行抢答</span>
+            </label>
+            <details class="member-popover">
+              <summary aria-label="查看群成员"><div id="participant-stack" class="participant-stack"></div></summary>
+              <aside class="context-panel">
+                <div class="panel-title"><span>群成员</span><small>本地运行</small></div>
+                <div id="member-list" class="member-list"></div>
+                <button id="add-agent" class="add-agent">＋ 添加 Agent</button>
+                <div class="rule"></div>
+                <div class="rule-card"><b>首次对话需要 @</b><p>Agent 首次回复后可开启并行抢答。</p></div>
+                <div class="rule-card"><b>项目只读</b><p>讨论中的 Agent 不会修改项目文件。</p></div>
+              </aside>
+            </details>
+          </div>
+        </header>
+        <div id="empty-state" class="empty-state">
+          <div class="empty-mark">A</div>
+          <h2>今天想讨论什么？</h2>
+          <p>邀请 Claude Code、Codex 和 Pi 在同一场对话里协作。</p>
+          <button id="empty-new">新建对话</button>
+        </div>
+        <div id="messages" class="messages" hidden></div>
+        <div id="typing" class="typing" hidden></div>
+        <div id="round-actions" class="round-actions" hidden>
+          <span id="round-status">首轮观点已齐</span>
+          <button id="synthesize-round" type="button">综合这些观点</button>
+          <button id="peer-review-round" type="button">互相评议</button>
+        </div>
+        <form id="composer" class="composer" hidden>
+          <div id="mention-menu" class="mention-menu" hidden></div>
+          <textarea id="message-input" rows="1" placeholder="首次消息请 @任意 Agent 开启会话…"></textarea>
+          <div class="composer-foot">
+            <div class="route-status" id="route-status"></div>
+            <button class="send" id="send-button" type="submit" aria-label="发送消息"><span>↗</span></button>
+          </div>
+        </form>
+      </section>
+
+      <section class="settings-view" id="settings-view" hidden>
+        <header class="settings-head">
+          <button id="settings-back" type="button" aria-label="返回对话">←</button>
+          <div><small id="settings-scope">当前会话</small><h1 id="settings-title">讨论设置</h1></div>
+        </header>
+        <div class="settings-content">
+          <nav class="settings-scope-tabs" aria-label="设置层级">
+            <button id="settings-global-scope" type="button">全局默认</button>
+            <button id="settings-conversation-scope" type="button">当前会话</button>
+          </nav>
+          <div class="settings-intro"><h2 id="settings-heading">会话讨论流程</h2><p id="settings-description">以下配置仅作用于当前会话，不会影响其他对话。</p></div>
+          <section class="settings-card">
+            <label class="setting-row">
+              <span><b>并行抢答</b><small>普通消息会同时发送给群内 Agent，按完成速度展示。</small></span>
+              <input type="checkbox" id="setting-auto-relay" />
+            </label>
+            <div class="setting-divider"></div>
+            <label class="setting-row">
+              <span><b>自动互相评议</b><small>首轮回答结束后，自动进入多 Agent 交叉评议。</small></span>
+              <input type="checkbox" id="setting-auto-review" />
+            </label>
+            <div class="setting-divider"></div>
+            <label class="setting-row rounds-row">
+              <span><b>自动评议轮数</b><small>每轮只读取上一轮观点；停止按钮可终止整个循环。</small></span>
+              <select id="setting-review-rounds"><option value="1">1 轮</option><option value="2">2 轮</option><option value="3">3 轮</option><option value="4">4 轮</option><option value="5">5 轮</option></select>
+            </label>
+            <div class="setting-divider"></div>
+            <label class="setting-row rounds-row">
+              <span><b>Skill 选择方式</b><small>固定绑定仅使用手工勾选项；自动匹配会根据名称、描述、域名和触发词选择 Skill。</small></span>
+              <select id="setting-skill-mode"><option value="manual">固定绑定</option><option value="auto">自动匹配</option></select>
+            </label>
+            <div class="setting-divider"></div>
+            <label class="setting-row"><span><b>允许 Shell</b><small>允许 Skill 调用 Bash 或其他本地命令。</small></span><input type="checkbox" id="setting-skill-shell" /></label>
+            <div class="setting-divider"></div>
+            <label class="setting-row"><span><b>允许网络访问</b><small>允许 Skill 访问外部网络；仍受各 CLI 沙箱能力限制。</small></span><input type="checkbox" id="setting-skill-network" /></label>
+            <div class="setting-divider"></div>
+            <label class="setting-row"><span><b>允许工作区写入</b><small>启用最小可用写入沙箱；修改权限会重建 Agent Session。</small></span><input type="checkbox" id="setting-skill-write" /></label>
+          </section>
+          <section class="settings-card provider-health-card">
+            <div class="provider-health-head"><span><b>本机 Provider</b><small>检查 CLI 是否安装并显示当前版本。</small></span><button id="refresh-providers" type="button">重新检测</button></div>
+            <div class="setting-divider"></div>
+            <div id="provider-health-list" class="provider-health-list"><span class="provider-checking">正在检测…</span></div>
+          </section>
+          <section class="settings-card provider-health-card">
+            <div class="provider-health-head"><span><b>存储与备份</b><small id="storage-summary">正在读取存储状态…</small></span><div class="maintenance-actions"><button id="create-backup" type="button">立即备份</button><button id="cleanup-artifacts" type="button">清理孤立产物</button></div></div>
+            <div id="backup-list" class="backup-list"></div>
+          </section>
+          <section class="settings-card provider-health-card"><div class="provider-health-head"><span><b>执行审计</b><small>最近的权限修改、Skill 加载与 Agent 运行结果。</small></span><button id="refresh-audit" type="button">刷新</button></div><div id="audit-list" class="audit-list"></div></section>
+          <p class="settings-hint" id="settings-hint">设置会自动保存，并与当前会话绑定。</p>
+        </div>
+      </section>
+
+      <section class="tasks-view" id="tasks-view" hidden>
+        <header class="settings-head tasks-head"><button id="tasks-back" type="button" aria-label="返回对话">←</button><div><small>共享团队</small><h1>任务看板</h1></div><button class="skills-new" id="new-task" type="button">＋ 新建任务</button></header>
+        <div class="tasks-content"><div class="task-agent-strip" id="task-agent-strip"></div><div class="task-board" id="task-board"></div></div>
+      </section>
+
+      <section class="skills-view" id="skills-view" hidden>
+        <header class="settings-head skills-head">
+          <button id="skills-back" type="button" aria-label="返回对话">←</button>
+          <div><small>当前账号</small><h1>Skills</h1></div>
+          <div class="skills-head-actions">
+            <input id="skill-import" type="file" accept=".zip,application/zip" hidden />
+            <button class="skills-import" id="import-skill" type="button">导入 ZIP</button>
+            <button class="skills-new" id="new-skill" type="button">＋ 新建 Skill</button>
+          </div>
+        </header>
+        <div class="skills-content">
+          <section class="skills-library">
+            <div class="skills-section-head"><div><h2>Skill 库</h2><p>自动读取本机 Skill，也可为当前账号导入完整 ZIP 包。</p></div><span id="skill-count">0 可用</span></div>
+            <div class="skill-list" id="skill-list"></div>
+          </section>
+          <section class="skills-assignments">
+            <div class="skills-section-head"><div><h2>分配给 Agent</h2><p id="skill-assignment-context">选择当前会话中每个 Agent 可以使用的 Skill。</p></div></div>
+            <div id="skill-assignments" class="skill-assignment-list"></div>
+          </section>
+        </div>
+      </section>
+
+    </main>
+
+    <dialog id="new-dialog">
+      <form method="dialog" id="new-form">
+        <p class="eyebrow">NEW CONVERSATION</p><h2>开启新讨论</h2>
+        <label>话题名称<input id="new-title" maxlength="80" placeholder="例如：评审登录模块方案" required /></label>
+        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
+      </form>
+    </dialog>
+    <dialog id="agent-dialog">
+      <form method="dialog" id="agent-form">
+        <input id="agent-original-name" type="hidden" />
+        <p class="eyebrow">PARTICIPANT</p><h2 id="agent-dialog-title">添加 Agent</h2>
+        <label>名称<input id="agent-name" maxlength="30" placeholder="pi-reviewer" required /></label>
+        <label>类型<select id="agent-provider"><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="pi">Pi Coding Agent</option></select></label>
+        <label>模型（可选）<input id="agent-model" placeholder="使用 CLI 默认模型" /></label>
+        <label class="dialog-checkbox"><input id="agent-auto-discuss" type="checkbox" /> 参与并行抢答与互评</label>
+        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">添加</button></div>
+      </form>
+    </dialog>
+    <dialog id="conversation-dialog">
+      <form method="dialog" id="conversation-form">
+        <p class="eyebrow">CONVERSATION</p><h2>管理对话</h2>
+        <label>对话名称<input id="manage-conversation-title" maxlength="80" required /></label>
+        <div class="dialog-actions split-actions">
+          <button class="danger" id="delete-conversation" type="button">删除</button>
+          <span></span>
+          <button value="cancel">取消</button>
+          <button id="archive-conversation" type="button">归档</button>
+          <button class="primary" value="default">保存</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="provider-dialog">
+      <form method="dialog" id="provider-form">
+        <input id="provider-config-name" type="hidden" />
+        <p class="eyebrow">PROVIDER</p><h2 id="provider-dialog-title">配置 Provider</h2>
+        <label>CLI 路径（留空自动查找）<input id="provider-executable" placeholder="例如：/usr/local/bin/codex" /></label>
+        <label>附加参数<input id="provider-extra-args" placeholder="例如：--profile team" /></label>
+        <label>单次超时（秒）<input id="provider-timeout" type="number" min="10" max="3600" value="300" required /></label>
+        <p class="dialog-note">修改配置会在下一次 Agent 调用时生效。</p>
+        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">保存并检测</button></div>
+      </form>
+    </dialog>
+    <dialog id="task-dialog">
+      <form method="dialog" id="task-form">
+        <input id="task-id" type="hidden" /><p class="eyebrow">TEAM TASK</p><h2 id="task-dialog-title">新建任务</h2>
+        <label>标题<input id="task-title" maxlength="160" required /></label>
+        <label>说明<textarea id="task-description" rows="4" maxlength="5000"></textarea></label>
+        <label>依赖任务（逗号分隔）<input id="task-depends" placeholder="task-0001, task-0002" /></label>
+        <label>文件作用域（逗号分隔）<input id="task-scopes" placeholder="internal/api, test/api" /></label>
+        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
+      </form>
+    </dialog>
+    <dialog id="review-dialog">
+      <form method="dialog" id="review-form">
+        <p class="eyebrow">SYNTHESIZE ROUND</p><h2>综合这些观点</h2>
+        <p class="dialog-note">选择一位 Agent 阅读本轮全部回复，并给出综合结论。</p>
+        <label>负责综合的 Agent<select id="review-agent"></select></label>
+        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">开始综合</button></div>
+      </form>
+    </dialog>
+    <dialog id="skill-dialog">
+      <form method="dialog" id="skill-form">
+        <input id="skill-id" type="hidden" />
+        <p class="eyebrow">MANAGED SKILL</p><h2 id="skill-dialog-title">新建 Skill</h2>
+        <p class="dialog-note">Skill 会按会话分配并注入 Agent，不会写入共享项目目录。</p>
+        <label>名称<input id="skill-name" maxlength="50" pattern="[a-z0-9][a-z0-9-]{1,49}" placeholder="例如：evidence-review" required /></label>
+        <label>触发描述<textarea id="skill-description" maxlength="500" rows="3" placeholder="说明什么时候应使用这个 Skill" required></textarea></label>
+        <label>SKILL.md 指令<textarea id="skill-content" maxlength="30000" rows="12" placeholder="填写具体步骤、边界和输出要求" required></textarea></label>
+        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">保存</button></div>
+      </form>
+    </dialog>
+    <dialog id="skill-preview-dialog" class="skill-preview-dialog">
+      <form method="dialog">
+        <p class="eyebrow" id="skill-preview-source">SKILL</p><h2 id="skill-preview-title">Skill</h2>
+        <p class="dialog-note" id="skill-preview-meta"></p>
+        <pre id="skill-preview-content"></pre>
+        <div class="dialog-actions"><button value="cancel">关闭</button></div>
+      </form>
+    </dialog>
+    <div id="toast" class="toast" hidden></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
