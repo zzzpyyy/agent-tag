@@ -189,6 +189,7 @@ dialog form { width:min(420px,calc(100vw - 32px));padding:27px; }
 .eyebrow { margin:0 0 5px;color:#999;font-size:10px;font-weight:600;letter-spacing:.12em; }
 dialog h2 { margin:0 0 23px;font-size:20px; } dialog label { display:grid;gap:7px;margin:14px 0;color:#777;font-size:11px; }
 .dialog-note { margin:-13px 0 20px;color:#858585;font-size:12px;line-height:1.6; }
+.agent-provider-status { margin-top:-8px; }.agent-provider-status.missing { color:#b65a43; }
 dialog input,dialog select,dialog textarea { width:100%;padding:10px 11px;border:1px solid var(--line);border-radius:9px;background:#fff;outline:0;resize:vertical;line-height:1.55; }
 dialog input:focus,dialog select:focus,dialog textarea:focus { border-color:#aaa;box-shadow:0 0 0 3px #00000008; }
 .dialog-actions { display:flex;justify-content:flex-end;gap:8px;margin-top:25px; }.dialog-actions button { padding:8px 14px;border:1px solid var(--line);border-radius:8px;background:#fff;cursor:pointer; }.dialog-actions .primary { border-color:#171717;background:#171717;color:#fff; }
@@ -232,6 +233,8 @@ dialog input:focus,dialog select:focus,dialog textarea:focus { border-color:#aaa
 .provider-health-row span { display:grid;gap:2px; }.provider-health-row b { font-size:11px; }.provider-health-row small,.provider-checking { color:#999;font-size:9px; }
 .provider-health-row code { overflow:hidden;color:#999;font-size:9px;text-align:right;text-overflow:ellipsis;white-space:nowrap; }
 .provider-health-row button { padding:4px 7px;border:1px solid var(--line);border-radius:6px;background:#fff;color:#777;font-size:9px;cursor:pointer; }
+.provider-row-actions { display:flex!important;grid-auto-flow:column!important;gap:5px!important; }.provider-row-actions button.install { border-color:#d7a895;color:#a44c34; }
+.member.unavailable,.mini-avatar.unavailable { opacity:.48; }.provider-missing { color:#b64f37!important;background:#fff0eb!important; }.route-status button:disabled { opacity:.35;cursor:not-allowed; }
 .maintenance-actions { display:flex;gap:6px; }.backup-list { margin-top:10px;color:#999;font-size:9px; }.maintenance-actions button { white-space:nowrap; }
 .audit-list { display:grid;gap:5px;max-height:230px;margin-top:12px;overflow:auto; }.audit-row { display:grid;grid-template-columns:42px 70px 150px 1fr;gap:8px;padding:6px;border-bottom:1px solid #f0f0f0;font-size:9px; }.audit-row time,.audit-row span { color:#999; }.audit-row code { overflow:hidden;color:#666;text-overflow:ellipsis;white-space:nowrap; }
 .setting-row { min-height:86px;display:flex;align-items:center;justify-content:space-between;gap:30px;cursor:pointer; }

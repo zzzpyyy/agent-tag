@@ -19,16 +19,19 @@ import (
 )
 
 type WebServer struct {
-	store     *Store
-	providers ChatRunner
-	assets    fs.FS
-	skills    *SkillRegistry
-	mu        sync.Mutex
-	clients   map[chan struct{}]struct{}
-	typing    map[string]map[string]bool
-	live      map[string]map[string]LiveReply
-	active    map[string]activeTurn
-	turnSeq   uint64
+	store                       *Store
+	providers                   ChatRunner
+	installer                   ProviderInstaller
+	providerInstalled           func([]ProviderConfig, string) bool
+	enforceProviderAvailability bool
+	assets                      fs.FS
+	skills                      *SkillRegistry
+	mu                          sync.Mutex
+	clients                     map[chan struct{}]struct{}
+	typing                      map[string]map[string]bool
+	live                        map[string]map[string]LiveReply
+	active                      map[string]activeTurn
+	turnSeq                     uint64
 }
 
 type activeTurn struct {
@@ -58,7 +61,8 @@ func NewWebServer(store *Store, providers ChatRunner, assets fs.FS) *WebServer {
 }
 
 func NewWebServerWithSkillRegistry(store *Store, providers ChatRunner, assets fs.FS, skills *SkillRegistry) *WebServer {
-	return &WebServer{store: store, providers: providers, assets: assets, skills: skills, clients: map[chan struct{}]struct{}{}, typing: map[string]map[string]bool{}, live: map[string]map[string]LiveReply{}, active: map[string]activeTurn{}}
+	_, localProviders := providers.(*Providers)
+	return &WebServer{store: store, providers: providers, installer: OSProviderInstaller{}, providerInstalled: IsProviderInstalled, enforceProviderAvailability: localProviders, assets: assets, skills: skills, clients: map[chan struct{}]struct{}{}, typing: map[string]map[string]bool{}, live: map[string]map[string]LiveReply{}, active: map[string]activeTurn{}}
 }
 
 func (s *WebServer) Handler() http.Handler { return http.HandlerFunc(s.serveHTTP) }
@@ -179,6 +183,10 @@ func (s *WebServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) == 3 && parts[0] == "api" && parts[1] == "providers" && r.Method == "PATCH" {
 		s.updateProviderConfig(w, r, parts[2], user)
+		return
+	}
+	if len(parts) == 4 && parts[0] == "api" && parts[1] == "providers" && parts[3] == "install" && r.Method == "POST" {
+		s.installProvider(w, r, parts[2], user)
 		return
 	}
 	if len(parts) == 3 && parts[0] == "api" && parts[1] == "tasks" {
@@ -428,6 +436,34 @@ func (s *WebServer) updateProviderConfig(w http.ResponseWriter, r *http.Request,
 		return
 	}
 	jsonResponse(w, http.StatusOK, input)
+}
+
+func (s *WebServer) installProvider(w http.ResponseWriter, r *http.Request, provider string, user User) {
+	if _, ok := ProviderInstallPackage(provider); !ok {
+		jsonResponse(w, http.StatusNotFound, map[string]string{"error": "unknown provider"})
+		return
+	}
+	if s.providerInstalled(user.Providers, provider) {
+		jsonResponse(w, http.StatusOK, map[string]any{"provider": provider, "installed": true, "message": "Agent 已安装"})
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	result, err := s.installer.Install(ctx, provider)
+	if err != nil {
+		_ = s.store.AppendAudit(user.ID, "", user.Username, "provider_install_failed", fmt.Sprintf("provider=%s error=%s", provider, truncate(err.Error(), 500)))
+		jsonResponse(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "provider": provider, "command": result.Command, "output": result.Output})
+		return
+	}
+	installed := s.providerInstalled(user.Providers, provider)
+	if !installed {
+		message := "安装命令已完成，但服务进程的 PATH 中仍未找到该 Agent；请在 Provider 配置中填写 CLI 绝对路径"
+		_ = s.store.AppendAudit(user.ID, "", user.Username, "provider_install_failed", fmt.Sprintf("provider=%s error=executable_not_found_after_install", provider))
+		jsonResponse(w, http.StatusBadGateway, map[string]any{"error": message, "provider": provider, "command": result.Command, "output": result.Output})
+		return
+	}
+	_ = s.store.AppendAudit(user.ID, "", user.Username, "provider_installed", fmt.Sprintf("provider=%s command=%s", provider, result.Command))
+	jsonResponse(w, http.StatusOK, map[string]any{"provider": provider, "installed": true, "command": result.Command, "output": result.Output})
 }
 
 func (s *WebServer) deleteConversation(w http.ResponseWriter, id string, user User) {
@@ -1841,6 +1877,12 @@ func (s *WebServer) respondPrompt(ctx context.Context, id string, p Participant,
 	if owner != nil {
 		config = providerConfig(owner.Providers, p.Provider)
 	}
+	if s.enforceProviderAvailability && !s.providerInstalled(ownerProviders(owner), p.Provider) {
+		body := fmt.Sprintf("%s 无法加入本轮对话：本机未安装 %s。请前往设置安装或配置 CLI 路径。", p.Name, p.Provider)
+		_, _ = s.appendChat(id, ChatMessage{Author: "system", Kind: "system", Body: body})
+		_ = s.store.AppendAudit(conversation.OwnerID, id, p.Name, "agent_unavailable", "provider="+p.Provider+" executable_not_found")
+		return nil
+	}
 	assignedSkills, skillErr := s.skillsForParticipant(state, conversation, p, prompt)
 	if skillErr != nil {
 		return skillErr
@@ -1934,6 +1976,13 @@ func (s *WebServer) respondPrompt(ctx context.Context, id string, p Participant,
 		s.notify()
 	}
 	return err
+}
+
+func ownerProviders(user *User) []ProviderConfig {
+	if user == nil {
+		return nil
+	}
+	return user.Providers
 }
 
 func transcript(c Conversation, msgs []ChatMessage, p Participant) string {

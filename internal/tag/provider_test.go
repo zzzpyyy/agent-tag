@@ -188,3 +188,19 @@ func TestChatExecutionPolicyAndPiSkillPaths(t *testing.T) {
 		t.Fatalf("restricted calls=%v", calls)
 	}
 }
+
+func TestProviderInstallPackagesAreExplicitlyAllowlisted(t *testing.T) {
+	want := map[string]string{
+		"claude": "@anthropic-ai/claude-code",
+		"codex":  "@openai/codex",
+		"pi":     "@earendil-works/pi-coding-agent",
+	}
+	for provider, packageName := range want {
+		if got, ok := ProviderInstallPackage(provider); !ok || got != packageName {
+			t.Fatalf("ProviderInstallPackage(%q) = %q, %t", provider, got, ok)
+		}
+	}
+	if _, ok := ProviderInstallPackage("command"); ok {
+		t.Fatal("custom command provider must not be installable")
+	}
+}

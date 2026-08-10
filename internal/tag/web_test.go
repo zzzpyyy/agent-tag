@@ -25,6 +25,17 @@ type fakeChat struct {
 	calls []RunRequest
 }
 
+type fakeProviderInstaller struct {
+	installed *bool
+	calls     []string
+}
+
+func (f *fakeProviderInstaller) Install(_ context.Context, provider string) (ProviderInstallResult, error) {
+	f.calls = append(f.calls, provider)
+	*f.installed = true
+	return ProviderInstallResult{Provider: provider, Command: "npm install -g fake-" + provider}, nil
+}
+
 type artifactChat struct {
 	mu       sync.Mutex
 	calls    []RunRequest
@@ -1162,5 +1173,89 @@ func TestWebTaskBoardLifecycleAndProviderConfig(t *testing.T) {
 	}
 	if state.Tasks[1].Status != "pending" || state.Tasks[1].LastError != nil || len(state.Users[0].Providers) != 1 {
 		t.Fatalf("state after web updates=%+v user=%+v", state.Tasks[1], state.Users[0])
+	}
+}
+
+func TestProviderInstallationRequiresExplicitEndpointAndEnablesProvider(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "provider-install", false); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	web := NewWebServer(store, &fakeChat{}, fs.FS(fstest.MapFS{"index.html": {Data: []byte("ok")}}))
+	installed := false
+	installer := &fakeProviderInstaller{installed: &installed}
+	web.installer = installer
+	web.providerInstalled = func(_ []ProviderConfig, provider string) bool { return provider == "codex" && installed }
+	server := httptest.NewServer(web.Handler())
+	defer server.Close()
+	client := authenticatedClient(t, server.URL, "provider-installer")
+
+	response := postJSON(t, client, server.URL+"/api/providers/codex/install", map[string]any{})
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("install status=%d", response.StatusCode)
+	}
+	if !installed || len(installer.calls) != 1 || installer.calls[0] != "codex" {
+		t.Fatalf("installation not recorded: installed=%t calls=%v", installed, installer.calls)
+	}
+
+	unknown := postJSON(t, client, server.URL+"/api/providers/unknown/install", map[string]any{})
+	defer unknown.Body.Close()
+	if unknown.StatusCode != http.StatusNotFound {
+		t.Fatalf("unknown provider install status=%d", unknown.StatusCode)
+	}
+}
+
+func TestUnavailableProviderCannotParticipateInConversation(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "provider-unavailable", false); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	runner := &fakeChat{}
+	web := NewWebServer(store, runner, fs.FS(fstest.MapFS{"index.html": {Data: []byte("ok")}}))
+	web.enforceProviderAvailability = true
+	web.providerInstalled = func(_ []ProviderConfig, _ string) bool { return false }
+	server := httptest.NewServer(web.Handler())
+	defer server.Close()
+	client := authenticatedClient(t, server.URL, "provider-unavailable")
+
+	created := postJSON(t, client, server.URL+"/api/conversations", map[string]string{"title": "unavailable"})
+	var conversation Conversation
+	if err := json.NewDecoder(created.Body).Decode(&conversation); err != nil {
+		t.Fatal(err)
+	}
+	_ = created.Body.Close()
+	message := postJSON(t, client, server.URL+"/api/conversations/"+conversation.ID+"/messages", map[string]string{"body": "@codex hello"})
+	_ = message.Body.Close()
+	if message.StatusCode != http.StatusCreated {
+		t.Fatalf("message status=%d", message.StatusCode)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		state, err := store.Read()
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocked := false
+		for _, chat := range state.ChatMessages {
+			if chat.ConversationID == conversation.ID && chat.Kind == "system" && strings.Contains(chat.Body, "本机未安装") {
+				blocked = true
+			}
+		}
+		if blocked {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("unavailable provider was not blocked")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.calls) != 0 {
+		t.Fatalf("unavailable provider was invoked: %d calls", len(runner.calls))
 	}
 }

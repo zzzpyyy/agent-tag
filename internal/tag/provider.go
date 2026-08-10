@@ -59,16 +59,73 @@ type ProviderStatus struct {
 	Error     string `json:"error,omitempty"`
 }
 
+type ProviderInstallResult struct {
+	Provider string `json:"provider"`
+	Command  string `json:"command"`
+	Output   string `json:"output,omitempty"`
+}
+
+type ProviderInstaller interface {
+	Install(context.Context, string) (ProviderInstallResult, error)
+}
+
+type OSProviderInstaller struct{}
+
+func ProviderInstallPackage(provider string) (string, bool) {
+	packages := map[string]string{
+		"claude": "@anthropic-ai/claude-code",
+		"codex":  "@openai/codex",
+		"pi":     "@earendil-works/pi-coding-agent",
+	}
+	value, ok := packages[provider]
+	return value, ok
+}
+
+func (OSProviderInstaller) Install(ctx context.Context, provider string) (ProviderInstallResult, error) {
+	packageName, ok := ProviderInstallPackage(provider)
+	if !ok {
+		return ProviderInstallResult{}, fmt.Errorf("unsupported provider: %s", provider)
+	}
+	command := "npm install -g " + packageName
+	result := ProviderInstallResult{Provider: provider, Command: command}
+	path, err := exec.LookPath("npm")
+	if err != nil {
+		return result, errors.New("未找到 npm，请先安装 Node.js 18 或更高版本")
+	}
+	output, err := exec.CommandContext(ctx, path, "install", "-g", packageName).CombinedOutput()
+	result.Output = truncate(strings.TrimSpace(string(output)), 4000)
+	if ctx.Err() != nil {
+		return result, fmt.Errorf("安装 %s 超时或已取消", provider)
+	}
+	if err != nil {
+		if result.Output == "" {
+			return result, fmt.Errorf("安装 %s 失败: %w", provider, err)
+		}
+		return result, fmt.Errorf("安装 %s 失败：%s", provider, result.Output)
+	}
+	return result, nil
+}
+
+func configuredProviderExecutable(configs []ProviderConfig, provider string) string {
+	for _, config := range configs {
+		if config.Provider == provider && strings.TrimSpace(config.Executable) != "" {
+			return strings.TrimSpace(config.Executable)
+		}
+	}
+	return provider
+}
+
+func IsProviderInstalled(configs []ProviderConfig, provider string) bool {
+	_, err := exec.LookPath(configuredProviderExecutable(configs, provider))
+	return err == nil
+}
+
 func DetectProviderStatuses(ctx context.Context) []ProviderStatus {
 	return DetectConfiguredProviderStatuses(ctx, nil)
 }
 
 func DetectConfiguredProviderStatuses(ctx context.Context, configs []ProviderConfig) []ProviderStatus {
 	names := []string{"claude", "codex", "pi"}
-	configured := map[string]string{}
-	for _, config := range configs {
-		configured[config.Provider] = strings.TrimSpace(config.Executable)
-	}
 	statuses := make([]ProviderStatus, len(names))
 	var wg sync.WaitGroup
 	for index, name := range names {
@@ -77,10 +134,7 @@ func DetectConfiguredProviderStatuses(ctx context.Context, configs []ProviderCon
 		go func() {
 			defer wg.Done()
 			status := ProviderStatus{Provider: name}
-			executable := configured[name]
-			if executable == "" {
-				executable = name
-			}
+			executable := configuredProviderExecutable(configs, name)
 			path, err := exec.LookPath(executable)
 			if err != nil {
 				status.Error = "未找到可执行文件"

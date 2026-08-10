@@ -46,6 +46,8 @@ async function api(url, options) {
 
 function initials(name) { return name.slice(0, 2).toUpperCase(); }
 function providerLabel(provider) { return ({ claude:"Claude Code", codex:"Codex CLI", pi:"Pi Agent" })[provider] || provider; }
+function providerStatus(provider) { return providerStatuses?.find((item) => item.provider === provider); }
+function isProviderInstalled(provider) { const status = providerStatus(provider); return !status || Boolean(status.installed); }
 function time(value) { return new Intl.DateTimeFormat("zh-CN", { hour:"2-digit", minute:"2-digit" }).format(new Date(value)); }
 function escapeHtml(value) { return value.replace(/[&<>"']/g, (char) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" })[char]); }
 function toast(text) { els.toast.textContent = text; els.toast.hidden = false; setTimeout(() => { els.toast.hidden = true; }, 2400); }
@@ -155,8 +157,8 @@ function render() {
   renderTasks();
   if (!conversation) { els.title.textContent = "选择或新建一个对话"; els.members.innerHTML = ""; els.stack.innerHTML = ""; els.roundActions.hidden = true; return; }
   els.title.textContent = conversation.title;
-  els.stack.innerHTML = conversation.participants.map((p) => `<span class="mini-avatar ${p.provider}" title="${escapeHtml(p.name)}">${initials(p.name)}</span>`).join("");
-  els.members.innerHTML = conversation.participants.map((p) => `<div class="member"><span class="member-avatar ${p.provider}">${initials(p.name)}</span><span><b>${escapeHtml(p.name)}</b><small>${providerLabel(p.provider)}${p.model ? ` · ${escapeHtml(p.model)}` : ""}</small></span><span class="member-flags">${p.sessionId ? '<i class="session-live">SESSION</i>' : ""}${p.autoDiscuss ? '<i class="auto">AUTO</i>' : ""}</span><span class="member-actions"><button type="button" data-edit-agent="${escapeHtml(p.name)}" title="编辑">✎</button>${p.sessionId ? `<button type="button" data-reset-agent="${escapeHtml(p.name)}" title="重置会话">↻</button>` : ""}<button type="button" data-remove-agent="${escapeHtml(p.name)}" title="移除">×</button></span></div>`).join("");
+  els.stack.innerHTML = conversation.participants.map((p) => `<span class="mini-avatar ${p.provider} ${isProviderInstalled(p.provider) ? "" : "unavailable"}" title="${escapeHtml(p.name)}${isProviderInstalled(p.provider) ? "" : "（未安装）"}">${initials(p.name)}</span>`).join("");
+  els.members.innerHTML = conversation.participants.map((p) => `<div class="member ${isProviderInstalled(p.provider) ? "" : "unavailable"}"><span class="member-avatar ${p.provider}">${initials(p.name)}</span><span><b>${escapeHtml(p.name)}</b><small>${providerLabel(p.provider)}${p.model ? ` · ${escapeHtml(p.model)}` : ""}</small></span><span class="member-flags">${isProviderInstalled(p.provider) ? "" : '<i class="provider-missing">未安装</i>'}${p.sessionId ? '<i class="session-live">SESSION</i>' : ""}${p.autoDiscuss ? '<i class="auto">AUTO</i>' : ""}</span><span class="member-actions"><button type="button" data-edit-agent="${escapeHtml(p.name)}" title="编辑">✎</button>${p.sessionId ? `<button type="button" data-reset-agent="${escapeHtml(p.name)}" title="重置会话">↻</button>` : ""}<button type="button" data-remove-agent="${escapeHtml(p.name)}" title="移除">×</button></span></div>`).join("");
   const recentMessages = state.chatMessages.filter((item) => item.conversationId === activeId);
   const cachedOlder = olderMessages.get(activeId) || [];
   const byMessageId = new Map([...cachedOlder, ...recentMessages].map((message) => [message.id, message]));
@@ -212,13 +214,13 @@ function render() {
     els.routeStatus.innerHTML = '<span class="pulse"></span><span>先终止当前回复，再重新发送</span>';
   } else if (!conversation.started) {
     els.input.placeholder = "首次消息请 @任意 Agent 开启会话…";
-    els.routeStatus.innerHTML = conversation.participants.map((p) => `<button type="button" data-mention="@${escapeHtml(p.name)}">@${escapeHtml(p.name)}</button>`).join("") + '<span>首次需 @</span>';
+    els.routeStatus.innerHTML = conversation.participants.map((p) => `<button type="button" data-mention="@${escapeHtml(p.name)}" ${isProviderInstalled(p.provider) ? "" : "disabled title=\"Agent 未安装\""}>@${escapeHtml(p.name)}</button>`).join("") + '<span>首次需 @</span>';
   } else if (conversation.autoRelay) {
     els.input.placeholder = "直接输入，群内 Agent 会同时抢答…";
     els.routeStatus.innerHTML = '<span class="pulse"></span><span>并行抢答已开启</span>';
   } else {
     els.input.placeholder = "并行抢答已关闭，使用 @成员名唤醒…";
-    els.routeStatus.innerHTML = conversation.participants.map((p) => `<button type="button" data-mention="@${escapeHtml(p.name)}">@${escapeHtml(p.name)}</button>`).join("") + '<span>定向唤醒</span>';
+    els.routeStatus.innerHTML = conversation.participants.map((p) => `<button type="button" data-mention="@${escapeHtml(p.name)}" ${isProviderInstalled(p.provider) ? "" : "disabled title=\"Agent 未安装\""}>@${escapeHtml(p.name)}</button>`).join("") + '<span>定向唤醒</span>';
   }
   renderedConversationId = activeId;
   renderedMessageCount = messages.length;
@@ -228,7 +230,7 @@ function render() {
 function renderProviderStatuses() {
   const list = $("#provider-health-list");
   if (!providerStatuses) { list.innerHTML = '<span class="provider-checking">正在检测…</span>'; return; }
-  list.innerHTML = providerStatuses.map((item) => `<div class="provider-health-row"><i class="${item.installed ? "available" : "missing"}"></i><span><b>${providerLabel(item.provider)}</b><small>${escapeHtml(item.version || item.error || "版本未知")}</small></span><code title="${escapeHtml(item.path || "")}">${escapeHtml(item.path || "未安装")}</code><button type="button" data-config-provider="${item.provider}">配置</button></div>`).join("");
+  list.innerHTML = providerStatuses.map((item) => `<div class="provider-health-row"><i class="${item.installed ? "available" : "missing"}"></i><span><b>${providerLabel(item.provider)}</b><small>${escapeHtml(item.version || item.error || "版本未知")}</small></span><code title="${escapeHtml(item.path || "")}">${escapeHtml(item.path || "未安装")}</code><span class="provider-row-actions">${item.installed ? "" : `<button type="button" class="install" data-install-provider="${item.provider}">安装</button>`}<button type="button" data-config-provider="${item.provider}">配置</button></span></div>`).join("");
 }
 
 async function loadProviderStatuses() {
@@ -237,6 +239,15 @@ async function loadProviderStatuses() {
   try { const result = await api("/api/providers"); providerStatuses = result.providers; providerConfigs = result.configs || []; }
   catch (error) { toast(error.message); providerStatuses = []; }
   renderProviderStatuses();
+  if (state) render();
+}
+
+async function installProvider(provider) {
+  const result = await api(`/api/providers/${provider}/install`, { method:"POST", body:"{}" });
+  await loadProviderStatuses();
+  if (!providerStatus(provider)?.installed) throw new Error(`${providerLabel(provider)} 安装后仍不可用，请配置 CLI 路径`);
+  toast(`${providerLabel(provider)} 安装完成`);
+  return result;
 }
 
 function formatBytes(value) { if (value < 1024) return `${value} B`; if (value < 1048576) return `${(value/1024).toFixed(1)} KiB`; return `${(value/1048576).toFixed(1)} MiB`; }
@@ -356,6 +367,15 @@ $("#create-backup").onclick = async () => { try { const result = await api("/api
 $("#cleanup-artifacts").onclick = async () => { if (!window.confirm("清理已不存在对话所遗留的共享产物？")) return; try { const result = await api("/api/maintenance", { method:"POST", body:JSON.stringify({ action:"cleanup-artifacts" }) }); toast(`已清理 ${result.removed} 个产物目录`); await loadMaintenanceStatus(); } catch (error) { toast(error.message); } };
 $("#refresh-audit").onclick = loadAudit;
 $("#provider-health-list").onclick = (event) => {
+  const install = event.target.closest("[data-install-provider]");
+  if (install) {
+    const provider = install.dataset.installProvider;
+    if (!window.confirm(`将在本机全局安装 ${providerLabel(provider)}，是否继续？`)) return;
+    install.disabled = true;
+    install.textContent = "安装中…";
+    installProvider(provider).catch((error) => { toast(error.message); install.disabled = false; install.textContent = "重试"; });
+    return;
+  }
   const button = event.target.closest("[data-config-provider]");
   if (!button) return;
   const provider = button.dataset.configProvider;
@@ -393,8 +413,17 @@ function openAgentEditor(participant = null) {
   $("#agent-model").value = participant?.model || "";
   $("#agent-auto-discuss").checked = participant ? Boolean(participant.autoDiscuss) : true;
   $("#agent-dialog-title").textContent = participant ? "编辑 Agent" : "添加 Agent";
+  updateAgentProviderStatus();
   els.agentDialog.showModal();
 }
+function updateAgentProviderStatus() {
+  const provider = $("#agent-provider").value;
+  const status = providerStatus(provider);
+  const note = $("#agent-provider-status");
+  note.classList.toggle("missing", Boolean(status && !status.installed));
+  note.textContent = !status ? "正在检测本机 Agent…" : status.installed ? `已安装：${status.version || status.path || providerLabel(provider)}` : `${providerLabel(provider)} 尚未安装；保存时可选择是否安装。`;
+}
+$("#agent-provider").onchange = updateAgentProviderStatus;
 $("#add-agent").onclick = () => { if (activeId) openAgentEditor(); };
 $("#agent-form").onsubmit = async (event) => {
   if (event.submitter?.value === "cancel") return;
@@ -402,7 +431,16 @@ $("#agent-form").onsubmit = async (event) => {
   const originalName = $("#agent-original-name").value;
   const payload = { name:$("#agent-name").value, provider:$("#agent-provider").value, model:$("#agent-model").value, autoDiscuss:$("#agent-auto-discuss").checked };
   const endpoint = originalName ? `/api/conversations/${activeId}/participants/${encodeURIComponent(originalName)}` : `/api/conversations/${activeId}/participants`;
-  try { await api(endpoint, { method:originalName ? "PATCH" : "POST", body:JSON.stringify(payload) }); els.agentDialog.close(); await refresh(); }
+  try {
+    if (!isProviderInstalled(payload.provider)) {
+      if (!window.confirm(`${providerLabel(payload.provider)} 尚未安装。是否现在安装？\n\n选择“取消”将不会添加或切换到这个 Agent。`)) return;
+      const submit = event.submitter;
+      submit.disabled = true; submit.textContent = "安装中…";
+      try { await installProvider(payload.provider); }
+      finally { submit.disabled = false; submit.textContent = originalName ? "保存" : "添加"; }
+    }
+    await api(endpoint, { method:originalName ? "PATCH" : "POST", body:JSON.stringify(payload) }); els.agentDialog.close(); await refresh();
+  }
   catch (error) { toast(error.message); }
 };
 els.members.onclick = async (event) => {
