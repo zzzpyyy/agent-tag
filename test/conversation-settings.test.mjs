@@ -27,3 +27,9 @@ test("skills have a management tab, editor, and per-agent assignment surface", (
   assert.match(html, /id="skill-assignments"/);
   assert.match(html, /id="conversation-skills"/);
 });
+
+test("agent editor exposes local installation status before adding a provider", () => {
+  assert.match(html, /id="agent-provider"/);
+  assert.match(html, /id="agent-provider-status"/);
+  assert.match(html, /id="provider-health-list"/);
+});
