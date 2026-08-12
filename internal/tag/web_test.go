@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"io/fs"
 	"mime/multipart"
 	"net/http"
@@ -19,6 +20,47 @@ import (
 	"testing/fstest"
 	"time"
 )
+
+func TestArtifactCenterDownloadAndOwnerIsolation(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "web", false); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	server := httptest.NewServer(NewWebServer(store, &fakeChat{}, fstest.MapFS{"index.html": {Data: []byte("ok")}}).Handler())
+	defer server.Close()
+	owner := authenticatedClient(t, server.URL, "owner")
+	state, err := store.ReadMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(TagDir(root), "result.txt")
+	if err := os.WriteFile(path, []byte("downloadable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := ArtifactRecord{ID: "artifact-download", OwnerID: state.Users[0].ID, ConversationID: "conv-1", Agent: "codex", Path: path, Label: "result", MediaType: "text/plain", Size: 12, SHA256: "digest", CreatedAt: Now()}
+	if err := store.SaveArtifact(record); err != nil {
+		t.Fatal(err)
+	}
+	response, err := owner.Get(server.URL + "/api/artifacts/artifact-download/content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK || string(body) != "downloadable" {
+		t.Fatalf("download status=%d body=%q", response.StatusCode, body)
+	}
+	other := authenticatedClient(t, server.URL, "other")
+	response, err = other.Get(server.URL + "/api/artifacts/artifact-download/content")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("cross-owner status=%d", response.StatusCode)
+	}
+}
 
 type fakeChat struct {
 	mu    sync.Mutex
@@ -616,6 +658,41 @@ func TestAutoSkillModeMatchesLocalSkillAndInjectsIt(t *testing.T) {
 	}
 }
 
+func TestAutoSkillModeDoesNotMatchGeneratedSystemPrompt(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "auto-skill", false); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(t.TempDir(), "skills", "false-positive")
+	if err := os.MkdirAll(local, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	skillBody := "---\nname: false-positive\ndescription: Use when the user explicitly says “skill” or asks to configure a browser.\n---\nMust not load for a greeting."
+	if err := os.WriteFile(filepath.Join(local, "SKILL.md"), []byte(skillBody), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	runner := &fakeChat{}
+	registry := NewSkillRegistry(root, []SkillRoot{{Label: "Local", Path: filepath.Dir(local)}})
+	web := NewWebServerWithSkillRegistry(store, runner, fstest.MapFS{"index.html": {Data: []byte("ok")}}, registry)
+	server := httptest.NewServer(web.Handler())
+	defer server.Close()
+	client := authenticatedClient(t, server.URL)
+	created := postJSON(t, client, server.URL+"/api/conversations", map[string]string{"title": "greeting"})
+	var conversation Conversation
+	_ = json.NewDecoder(created.Body).Decode(&conversation)
+	_ = created.Body.Close()
+	response := postJSON(t, client, server.URL+"/api/conversations/"+conversation.ID+"/messages", map[string]string{"body": "@codex 你好"})
+	_ = response.Body.Close()
+	waitForMessages(t, store, 2)
+	waitInactive(t, web, conversation.ID)
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.calls) != 1 || strings.Contains(runner.calls[0].Prompt, "BEGIN MANAGED SKILL") {
+		t.Fatalf("generated prompt caused a false positive: %+v", runner.calls)
+	}
+}
+
 func TestPeerReviewStartsAllAgentsWithPeerViews(t *testing.T) {
 	root := t.TempDir()
 	if err := Init(root, "review", false); err != nil {
@@ -797,6 +874,70 @@ func TestGlobalSettingsBecomeDefaultsForNewConversations(t *testing.T) {
 	}
 	if !conversation.AutoRelay || !conversation.AutoReview || conversation.ReviewRounds != 3 || conversation.SkillMode != "auto" || !conversation.AllowSkillExecution {
 		t.Fatalf("conversation defaults = %+v", conversation)
+	}
+}
+
+func TestNewConversationCanChooseAndPersistDefaultAgents(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "defaults", false); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	server := httptest.NewServer(NewWebServer(store, &fakeChat{}, fstest.MapFS{"index.html": {Data: []byte("ok")}}).Handler())
+	defer server.Close()
+	client := authenticatedClient(t, server.URL)
+	chosen := []Participant{{Name: "pi", Provider: "pi", AutoDiscuss: true}}
+	response := postJSON(t, client, server.URL+"/api/conversations", map[string]any{"title": "first", "participants": chosen, "saveAsDefault": true})
+	var first Conversation
+	_ = json.NewDecoder(response.Body).Decode(&first)
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusCreated || len(first.Participants) != 1 || first.Participants[0].Provider != "pi" {
+		t.Fatalf("first=%+v status=%d", first, response.StatusCode)
+	}
+	response = postJSON(t, client, server.URL+"/api/conversations", map[string]string{"title": "second"})
+	var second Conversation
+	_ = json.NewDecoder(response.Body).Decode(&second)
+	_ = response.Body.Close()
+	if len(second.Participants) != 1 || second.Participants[0].Provider != "pi" {
+		t.Fatalf("saved defaults were not reused: %+v", second.Participants)
+	}
+}
+
+func TestFirstMessageAllTargetsEveryParticipant(t *testing.T) {
+	conversation := Conversation{Participants: []Participant{{Name: "cc", Provider: "claude"}, {Name: "codex", Provider: "codex"}, {Name: "pi", Provider: "pi"}}}
+	targets := responseTargets(&conversation, "@all 大家好")
+	if len(targets) != 3 {
+		t.Fatalf("@all targets=%+v", targets)
+	}
+}
+
+func TestFirstMessageAutomaticallyNamesUntitledConversation(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "titles", false); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	web := NewWebServer(store, &fakeChat{}, fstest.MapFS{"index.html": {Data: []byte("ok")}})
+	server := httptest.NewServer(web.Handler())
+	defer server.Close()
+	client := authenticatedClient(t, server.URL)
+	response := postJSON(t, client, server.URL+"/api/conversations", map[string]string{"title": ""})
+	var conversation Conversation
+	_ = json.NewDecoder(response.Body).Decode(&conversation)
+	_ = response.Body.Close()
+	if conversation.Title != "新对话" {
+		t.Fatalf("initial title=%q", conversation.Title)
+	}
+	response = postJSON(t, client, server.URL+"/api/conversations/"+conversation.ID+"/messages", map[string]string{"body": "@codex 评审登录模块方案"})
+	_ = response.Body.Close()
+	waitForMessages(t, store, 2)
+	waitInactive(t, web, conversation.ID)
+	state, err := store.ReadMetadata()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := findConversation(&state, conversation.ID).Title; got != "评审登录模块方案" {
+		t.Fatalf("automatic title=%q", got)
 	}
 }
 

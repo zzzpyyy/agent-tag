@@ -344,6 +344,7 @@ func workerCmd(args []string) error {
 	lease := 30 * time.Second
 	once := opts["--once"] == "true"
 	providers := tag.NewProviders(tag.OSRunner{})
+	workspaces := tag.GitWorkspaceManager{Root: store.Root}
 	var agent tag.Agent
 	teamName := "team"
 	err = store.Update(func(st *tag.State) error {
@@ -414,17 +415,24 @@ func workerCmd(args []string) error {
 		if agent.Command != nil {
 			command = *agent.Command
 		}
-		prompt := tag.BuildTaskPrompt(agent, teamName, *task, inbox, store.Root, os.Args[0])
 		var runID string
 		_ = store.Update(func(st *tag.State) error {
 			runID = tag.NextID(st, "run")
-			st.TaskRuns = append(st.TaskRuns, tag.TaskRun{ID: runID, TaskID: task.ID, Agent: name, Provider: provider, StartedAt: tag.Now(), Status: "in_progress"})
 			return nil
 		})
+		workspace, workspaceErr := workspaces.Prepare(ctx, runID)
+		if workspaceErr != nil {
+			result := tag.RunResult{Code: 1, Stderr: workspaceErr.Error()}
+			_ = store.AppendTaskRun(tag.TaskRun{ID: runID, TaskID: task.ID, Agent: name, Provider: provider, StartedAt: tag.Now(), Status: "in_progress"})
+			_ = finish(store, name, task.ID, runID, "blocked", "", "无法创建隔离工作区: "+workspaceErr.Error(), result)
+			continue
+		}
+		prompt := tag.BuildTaskPrompt(agent, teamName, *task, inbox, workspace.Workspace, os.Args[0])
+		_ = store.AppendTaskRun(tag.TaskRun{ID: runID, TaskID: task.ID, Agent: name, Provider: provider, StartedAt: tag.Now(), Status: "in_progress", Workspace: workspace.Workspace, Branch: workspace.Branch, BaseCommit: workspace.BaseCommit, HeadCommit: workspace.HeadCommit, IntegrationStatus: workspace.IntegrationStatus})
 		taskCtx, taskCancel := context.WithCancel(ctx)
 		heartbeatDone := make(chan struct{})
 		go heartbeat(taskCtx, store, name, task.ID, taskCancel, heartbeatDone)
-		result, runErr := providers.Task(taskCtx, tag.RunRequest{Provider: provider, Model: model, ExtraArgs: opts["--extra-args"], Command: command, Prompt: prompt, Root: store.Root, AgentName: name})
+		result, runErr := providers.Task(taskCtx, tag.RunRequest{Provider: provider, Model: model, ExtraArgs: opts["--extra-args"], Command: command, Prompt: prompt, Root: workspace.Workspace, AgentName: name})
 		close(heartbeatDone)
 		taskCancel()
 		status, summary, lastErr := "blocked", "", fmt.Sprintf("provider exit=%d; missing valid result marker", result.Code)
@@ -435,7 +443,14 @@ func workerCmd(args []string) error {
 			summary = result.Outcome.Summary
 			lastErr = ""
 		}
-		_ = finish(store, name, task.ID, runID, status, summary, lastErr, result)
+		finalWorkspace, finalizeErr := workspaces.Finalize(ctx, workspace, summary)
+		if finalizeErr != nil {
+			status = "blocked"
+			lastErr = "无法固化任务工作区: " + finalizeErr.Error()
+		} else {
+			workspace = finalWorkspace
+		}
+		_ = finish(store, name, task.ID, runID, status, summary, lastErr, result, workspace)
 		fmt.Printf("[%s] %s -> %s\n", name, task.ID, status)
 		if once {
 			return nil
@@ -561,8 +576,8 @@ func takeInbox(store *tag.Store, name string) []tag.MailMessage {
 	})
 	return out
 }
-func finish(store *tag.Store, name, id, runID, status, summary, lastErr string, result tag.RunResult) error {
-	return store.Update(func(st *tag.State) error {
+func finish(store *tag.Store, name, id, runID, status, summary, lastErr string, result tag.RunResult, workspaces ...tag.TaskWorkspace) error {
+	err := store.Update(func(st *tag.State) error {
 		for i := range st.Tasks {
 			if st.Tasks[i].ID == id {
 				if st.Tasks[i].Status == "cancel_requested" {
@@ -582,17 +597,6 @@ func finish(store *tag.Store, name, id, runID, status, summary, lastErr string, 
 				}
 			}
 		}
-		for index := range st.TaskRuns {
-			run := &st.TaskRuns[index]
-			if run.ID == runID {
-				run.CompletedAt = tag.Now()
-				run.Status = status
-				run.ExitCode = result.Code
-				run.Stdout = tag.TruncateForLog(result.Stdout, 20000)
-				run.Stderr = tag.TruncateForLog(result.Stderr, 20000)
-				run.Summary = summary
-			}
-		}
 		for i := range st.Agents {
 			if st.Agents[i].Name == name {
 				st.Agents[i].CurrentTask = nil
@@ -600,6 +604,27 @@ func finish(store *tag.Store, name, id, runID, status, summary, lastErr string, 
 			}
 		}
 		return nil
+	})
+	if err != nil {
+		return err
+	}
+	return store.UpdateTaskRun(runID, func(run *tag.TaskRun) {
+		run.CompletedAt = tag.Now()
+		run.Status = status
+		run.ExitCode = result.Code
+		run.Stdout = tag.TruncateForLog(result.Stdout, 20000)
+		run.Stderr = tag.TruncateForLog(result.Stderr, 20000)
+		run.Summary = summary
+		run.Observation = result.Observation
+		if len(workspaces) > 0 {
+			workspace := workspaces[0]
+			run.Workspace = workspace.Workspace
+			run.Branch = workspace.Branch
+			run.BaseCommit = workspace.BaseCommit
+			run.HeadCommit = workspace.HeadCommit
+			run.DiffStat = workspace.DiffStat
+			run.IntegrationStatus = workspace.IntegrationStatus
+		}
 	})
 }
 

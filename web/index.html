@@ -33,6 +33,7 @@
         <button class="global-settings-entry" id="global-settings" type="button"><span>⌁</span> 全局设置</button>
         <button class="global-settings-entry" id="tab-skills" type="button"><span>◇</span> Skills</button>
         <button class="global-settings-entry" id="tab-tasks" type="button"><span>✓</span> 任务看板</button>
+        <button class="global-settings-entry" id="tab-artifacts" type="button"><span>▣</span> 产物中心</button>
         <p class="section-label">对话</p>
         <nav id="conversation-list" class="conversation-list"></nav>
         <button class="archived-toggle" id="archived-toggle" type="button">已归档 <span id="archived-count">0</span></button>
@@ -43,7 +44,7 @@
       <section class="chat">
         <header class="chat-head">
           <div>
-            <h1 id="conversation-title">选择或新建一个对话</h1>
+            <h1 id="conversation-title" tabindex="0" title="点击重命名">选择或新建一个对话</h1>
           </div>
           <div class="head-actions">
             <button class="conversation-settings" id="conversation-manage" type="button" aria-label="管理当前对话" title="管理当前对话">•••</button>
@@ -121,12 +122,21 @@
               <span><b>Skill 选择方式</b><small>固定绑定仅使用手工勾选项；自动匹配会根据名称、描述、域名和触发词选择 Skill。</small></span>
               <select id="setting-skill-mode"><option value="manual">固定绑定</option><option value="auto">自动匹配</option></select>
             </label>
+            <div class="setting-divider" id="setting-default-agents-divider"></div>
+            <div class="setting-row default-agents-row" id="setting-default-agents-row">
+              <span><b>新对话默认 Agent</b><small>点击“新建对话”时直接使用此组合，不再逐次询问。</small></span>
+              <div class="setting-agent-options" id="setting-default-agent-options"></div>
+            </div>
             <div class="setting-divider"></div>
             <label class="setting-row"><span><b>允许 Shell</b><small>允许 Skill 调用 Bash 或其他本地命令。</small></span><input type="checkbox" id="setting-skill-shell" /></label>
             <div class="setting-divider"></div>
             <label class="setting-row"><span><b>允许网络访问</b><small>允许 Skill 访问外部网络；仍受各 CLI 沙箱能力限制。</small></span><input type="checkbox" id="setting-skill-network" /></label>
             <div class="setting-divider"></div>
             <label class="setting-row"><span><b>允许工作区写入</b><small>启用最小可用写入沙箱；修改权限会重建 Agent Session。</small></span><input type="checkbox" id="setting-skill-write" /></label>
+            <div class="setting-divider"></div>
+            <label class="setting-row"><span><b>会话 Token 预算</b><small>累计达到后阻止新的 Agent 调用；0 表示不限。</small></span><input id="setting-token-budget" type="number" min="0" step="1000" value="0" /></label>
+            <div class="setting-divider"></div>
+            <label class="setting-row"><span><b>会话成本预算（USD）</b><small>依赖 Provider 返回的估算成本；0 表示不限。</small></span><input id="setting-cost-budget" type="number" min="0" step="0.01" value="0" /></label>
           </section>
           <section class="settings-card provider-health-card">
             <div class="provider-health-head"><span><b>本机 Provider</b><small>检查 CLI 是否安装并显示当前版本。</small></span><button id="refresh-providers" type="button">重新检测</button></div>
@@ -169,37 +179,35 @@
         </div>
       </section>
 
+      <section class="artifacts-view" id="artifacts-view" hidden>
+        <header class="settings-head tasks-head"><button id="artifacts-back" type="button" aria-label="返回对话">←</button><div><small>当前账号</small><h1>产物中心</h1></div><button class="skills-new" id="refresh-artifacts" type="button">刷新</button></header>
+        <div class="artifacts-content" id="artifact-list"><span class="provider-checking">正在读取产物…</span></div>
+      </section>
+
     </main>
 
-    <dialog id="new-dialog">
-      <form method="dialog" id="new-form">
-        <p class="eyebrow">NEW CONVERSATION</p><h2>开启新讨论</h2>
-        <label>话题名称<input id="new-title" maxlength="80" placeholder="例如：评审登录模块方案" required /></label>
-        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
-      </form>
-    </dialog>
     <dialog id="agent-dialog">
       <form method="dialog" id="agent-form">
         <input id="agent-original-name" type="hidden" />
         <p class="eyebrow">PARTICIPANT</p><h2 id="agent-dialog-title">添加 Agent</h2>
         <label>名称<input id="agent-name" maxlength="30" placeholder="pi-reviewer" required /></label>
-        <label>类型<select id="agent-provider"><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="pi">Pi Coding Agent</option></select></label>
+        <label>类型<select id="agent-provider"><option value="codex">Codex CLI</option><option value="claude">Claude Code</option><option value="pi">Pi Coding Agent</option><option value="command">自定义命令</option></select></label>
         <p class="dialog-note agent-provider-status" id="agent-provider-status">正在检测本机 Agent…</p>
         <label>模型（可选）<input id="agent-model" placeholder="使用 CLI 默认模型" /></label>
+        <label id="agent-command-row" hidden>命令（Prompt 通过 stdin 输入）<input id="agent-command" placeholder="例如：my-agent --json" /></label>
         <label class="dialog-checkbox"><input id="agent-auto-discuss" type="checkbox" /> 参与并行抢答与互评</label>
-        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">添加</button></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button class="primary" value="default">添加</button></div>
       </form>
     </dialog>
     <dialog id="conversation-dialog">
-      <form method="dialog" id="conversation-form">
+      <form method="dialog">
         <p class="eyebrow">CONVERSATION</p><h2>管理对话</h2>
-        <label>对话名称<input id="manage-conversation-title" maxlength="80" required /></label>
+        <p class="dialog-note manage-conversation-note">点击页面顶部标题可直接重命名。此处用于归档或删除当前对话。</p>
         <div class="dialog-actions split-actions">
           <button class="danger" id="delete-conversation" type="button">删除</button>
           <span></span>
-          <button value="cancel">取消</button>
+          <button value="cancel" formnovalidate>关闭</button>
           <button id="archive-conversation" type="button">归档</button>
-          <button class="primary" value="default">保存</button>
         </div>
       </form>
     </dialog>
@@ -211,7 +219,7 @@
         <label>附加参数<input id="provider-extra-args" placeholder="例如：--profile team" /></label>
         <label>单次超时（秒）<input id="provider-timeout" type="number" min="10" max="3600" value="300" required /></label>
         <p class="dialog-note">修改配置会在下一次 Agent 调用时生效。</p>
-        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">保存并检测</button></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button class="primary" value="default">保存并检测</button></div>
       </form>
     </dialog>
     <dialog id="task-dialog">
@@ -221,7 +229,7 @@
         <label>说明<textarea id="task-description" rows="4" maxlength="5000"></textarea></label>
         <label>依赖任务（逗号分隔）<input id="task-depends" placeholder="task-0001, task-0002" /></label>
         <label>文件作用域（逗号分隔）<input id="task-scopes" placeholder="internal/api, test/api" /></label>
-        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">创建</button></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button class="primary" value="default">创建</button></div>
       </form>
     </dialog>
     <dialog id="review-dialog">
@@ -229,7 +237,7 @@
         <p class="eyebrow">SYNTHESIZE ROUND</p><h2>综合这些观点</h2>
         <p class="dialog-note">选择一位 Agent 阅读本轮全部回复，并给出综合结论。</p>
         <label>负责综合的 Agent<select id="review-agent"></select></label>
-        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">开始综合</button></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button class="primary" value="default">开始综合</button></div>
       </form>
     </dialog>
     <dialog id="skill-dialog">
@@ -240,7 +248,7 @@
         <label>名称<input id="skill-name" maxlength="50" pattern="[a-z0-9][a-z0-9-]{1,49}" placeholder="例如：evidence-review" required /></label>
         <label>触发描述<textarea id="skill-description" maxlength="500" rows="3" placeholder="说明什么时候应使用这个 Skill" required></textarea></label>
         <label>SKILL.md 指令<textarea id="skill-content" maxlength="30000" rows="12" placeholder="填写具体步骤、边界和输出要求" required></textarea></label>
-        <div class="dialog-actions"><button value="cancel">取消</button><button class="primary" value="default">保存</button></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>取消</button><button class="primary" value="default">保存</button></div>
       </form>
     </dialog>
     <dialog id="skill-preview-dialog" class="skill-preview-dialog">
@@ -248,7 +256,7 @@
         <p class="eyebrow" id="skill-preview-source">SKILL</p><h2 id="skill-preview-title">Skill</h2>
         <p class="dialog-note" id="skill-preview-meta"></p>
         <pre id="skill-preview-content"></pre>
-        <div class="dialog-actions"><button value="cancel">关闭</button></div>
+        <div class="dialog-actions"><button value="cancel" formnovalidate>关闭</button></div>
       </form>
     </dialog>
     <div id="toast" class="toast" hidden></div>

@@ -1,8 +1,11 @@
 package tag
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"mime"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -80,7 +83,22 @@ func (s *WebServer) persistRunArtifacts(ownerID, conversationID, agentName strin
 		if label == "" {
 			label = "Agent 工具输出"
 		}
-		result = append(result, ChatArtifact{Path: targetPath, Label: label})
+		contents, err := os.ReadFile(targetPath)
+		if err != nil {
+			return result, err
+		}
+		digest := sha256.Sum256(contents)
+		mediaType := mime.TypeByExtension(extension)
+		if mediaType == "" {
+			mediaType = "application/octet-stream"
+		}
+		artifactID := "artifact-" + strings.ToLower(token)
+		record := ArtifactRecord{ID: artifactID, OwnerID: ownerID, ConversationID: conversationID, Agent: agentName, Path: targetPath, Label: label, MediaType: mediaType, Size: int64(len(contents)), SHA256: hex.EncodeToString(digest[:]), CreatedAt: Now()}
+		if err := s.store.SaveArtifact(record); err != nil {
+			_ = os.Remove(targetPath)
+			return result, err
+		}
+		result = append(result, ChatArtifact{ID: artifactID, Label: label, MediaType: mediaType, Size: record.Size, SHA256: record.SHA256})
 	}
 	return result, nil
 }

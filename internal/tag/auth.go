@@ -129,7 +129,7 @@ func (s *WebServer) authenticate(r *http.Request) (User, bool) {
 	if err != nil || cookie.Value == "" {
 		return User{}, false
 	}
-	state, err := s.store.Read()
+	state, err := s.store.ReadMetadata()
 	if err != nil {
 		return User{}, false
 	}
@@ -186,7 +186,7 @@ func (s *WebServer) register(w http.ResponseWriter, r *http.Request) {
 			return fmt.Errorf("账号已存在")
 		}
 		firstUser := len(state.Users) == 0
-		defaults := DiscussionSettings{ReviewRounds: 1, SkillMode: "auto", AllowSkillExecution: true, SkillPermissions: SkillPermissions{Shell: true, Network: true, Write: true}}
+		defaults := DiscussionSettings{ReviewRounds: 1, SkillMode: "auto", AllowSkillExecution: true, SkillPermissions: SkillPermissions{Shell: true, Network: true, Write: true}, DefaultParticipants: defaultParticipants()}
 		if firstUser {
 			defaults = state.Defaults
 		}
@@ -219,7 +219,7 @@ func (s *WebServer) login(w http.ResponseWriter, r *http.Request) {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	state, err := s.store.Read()
+	state, err := s.store.ReadMetadata()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": "无法登录"})
 		return
