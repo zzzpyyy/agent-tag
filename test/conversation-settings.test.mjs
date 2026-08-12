@@ -35,6 +35,11 @@ test("agent editor exposes local installation status before adding a provider", 
   assert.match(html, /id="provider-health-list"/);
 });
 
+test("provider configuration supports an optional shell launch command", () => {
+  assert.match(html, /id="provider-launch-command"/);
+  assert.match(html, /启动命令（可选）/);
+});
+
 test("new conversation is one click and default agents live in global settings", () => {
   assert.doesNotMatch(html, /id="new-dialog"/);
   assert.match(html, /id="setting-default-agent-options"/);

@@ -21,12 +21,12 @@ import (
 const resultPrefix = "AGENT_TAG_RESULT:"
 
 type RunRequest struct {
-	Provider, Model, Executable, ExtraArgs, Command, Prompt, Root, AgentName string
-	SessionID                                                                *string
-	SkillPaths                                                               []string
-	AllowSkillExecution                                                      bool
-	SkillPermissions                                                         SkillPermissions
-	OnProgress                                                               func(RunProgress)
+	Provider, Model, Executable, LaunchCommand, ExtraArgs, Command, Prompt, Root, AgentName string
+	SessionID                                                                               *string
+	SkillPaths                                                                              []string
+	AllowSkillExecution                                                                     bool
+	SkillPermissions                                                                        SkillPermissions
+	OnProgress                                                                              func(RunProgress)
 }
 
 type RunProgress struct {
@@ -117,7 +117,21 @@ func configuredProviderExecutable(configs []ProviderConfig, provider string) str
 	return provider
 }
 
+func configuredProviderLaunchCommand(configs []ProviderConfig, provider string) string {
+	for _, config := range configs {
+		if config.Provider == provider {
+			return strings.TrimSpace(config.LaunchCommand)
+		}
+	}
+	return ""
+}
+
 func IsProviderInstalled(configs []ProviderConfig, provider string) bool {
+	if configuredProviderLaunchCommand(configs, provider) != "" {
+		// A launch command may be a shell alias or function, so LookPath cannot
+		// resolve it. The status probe performs the authoritative execution check.
+		return true
+	}
 	_, err := exec.LookPath(configuredProviderExecutable(configs, provider))
 	return err == nil
 }
@@ -137,22 +151,40 @@ func DetectConfiguredProviderStatuses(ctx context.Context, configs []ProviderCon
 			defer wg.Done()
 			status := ProviderStatus{Provider: name}
 			executable := configuredProviderExecutable(configs, name)
-			path, err := exec.LookPath(executable)
-			if err != nil {
-				status.Error = "未找到可执行文件"
-				statuses[index] = status
-				return
+			launchCommand := configuredProviderLaunchCommand(configs, name)
+			path := executable
+			if launchCommand == "" {
+				var err error
+				path, err = exec.LookPath(executable)
+				if err != nil {
+					status.Error = "未找到可执行文件"
+					statuses[index] = status
+					return
+				}
+				status.Path = path
+			} else {
+				status.Path = launchCommand
 			}
-			status.Installed = true
-			status.Path = path
 			commandCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 			defer cancel()
-			output, commandErr := exec.CommandContext(commandCtx, path, "--version").CombinedOutput()
-			status.Version = truncate(strings.TrimSpace(string(output)), 160)
+			req := RunRequest{Provider: name, Executable: path, LaunchCommand: launchCommand}
+			process, args, environment := providerProcess(req, name, []string{"--version"})
+			command := exec.CommandContext(commandCtx, process, args...)
+			command.Env = os.Environ()
+			for key, value := range environment {
+				command.Env = append(command.Env, key+"="+value)
+			}
+			output, commandErr := command.CombinedOutput()
+			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+			if len(lines) > 0 {
+				status.Version = truncate(strings.TrimSpace(lines[len(lines)-1]), 160)
+			}
 			if commandCtx.Err() == context.DeadlineExceeded {
 				status.Error = "版本检查超时"
 			} else if commandErr != nil {
-				status.Error = "无法读取版本"
+				status.Error = "启动命令不可用"
+			} else {
+				status.Installed = true
 			}
 			statuses[index] = status
 		}()
@@ -466,17 +498,39 @@ func effectivePermissions(req RunRequest) SkillPermissions {
 	return normalizedSkillPermissions(req.AllowSkillExecution, req.SkillPermissions)
 }
 func splitArgs(value string) []string { return strings.Fields(value) }
+
+func providerProcess(req RunRequest, fallback string, args []string) (string, []string, map[string]string) {
+	environment := env(req)
+	launchCommand := strings.TrimSpace(req.LaunchCommand)
+	if launchCommand == "" {
+		return executable(req, fallback), args, environment
+	}
+	shell := strings.TrimSpace(os.Getenv("SHELL"))
+	if shell == "" {
+		shell = "/bin/sh"
+	}
+	environment["AGENT_TAG_LAUNCH_COMMAND"] = launchCommand
+	shellArgs := []string{"-l", "-i", "-c", `eval "$AGENT_TAG_LAUNCH_COMMAND \"\$@\""`, "agent-tag-provider"}
+	return shell, append(shellArgs, args...), environment
+}
+
+func runProviderCommand(ctx context.Context, runner CommandRunner, req RunRequest, fallback string, args []string) CommandResult {
+	name, processArgs, environment := providerProcess(req, fallback, args)
+	return runner.Run(ctx, name, processArgs, req.Root, req.Prompt, environment)
+}
+
 func resultFromCommand(r CommandResult) RunResult {
 	return RunResult{Code: r.Code, Stdout: r.Stdout, Stderr: r.Stderr}
 }
 
-func runCommand(ctx context.Context, runner CommandRunner, req RunRequest, name string, args []string, parse func(string) (string, []string)) CommandResult {
+func runCommand(ctx context.Context, runner CommandRunner, req RunRequest, fallback string, args []string, parse func(string) (string, []string)) CommandResult {
+	name, processArgs, environment := providerProcess(req, fallback, args)
 	streamer, ok := runner.(StreamingCommandRunner)
 	if !ok || req.OnProgress == nil || parse == nil {
-		return runner.Run(ctx, name, args, req.Root, req.Prompt, env(req))
+		return runner.Run(ctx, name, processArgs, req.Root, req.Prompt, environment)
 	}
 	var raw strings.Builder
-	return streamer.RunStream(ctx, name, args, req.Root, req.Prompt, env(req), func(line string) {
+	return streamer.RunStream(ctx, name, processArgs, req.Root, req.Prompt, environment, func(line string) {
 		raw.WriteString(line)
 		raw.WriteByte('\n')
 		text, steps := parse(raw.String())
@@ -494,7 +548,7 @@ func (a claudeAdapter) Task(ctx context.Context, req RunRequest) (RunResult, err
 		args = append(args, "--model", req.Model)
 	}
 	args = append(args, splitArgs(req.ExtraArgs)...)
-	r := resultFromCommand(a.runner.Run(ctx, "claude", args, req.Root, req.Prompt, env(req)))
+	r := resultFromCommand(runProviderCommand(ctx, a.runner, req, "claude", args))
 	r.Outcome = ParseOutcome(r.Stdout)
 	return r, nil
 }
@@ -517,7 +571,7 @@ func (a claudeAdapter) Chat(ctx context.Context, req RunRequest) (RunResult, err
 		args = append(args, "--resume", *sid)
 	}
 	args = append(args, splitArgs(req.ExtraArgs)...)
-	cmd := runCommand(ctx, a.runner, req, executable(req, "claude"), args, ParseClaudeEvents)
+	cmd := runCommand(ctx, a.runner, req, "claude", args, ParseClaudeEvents)
 	text, steps := ParseClaudeEvents(cmd.Stdout)
 	r := resultFromCommand(cmd)
 	r.Text = text
@@ -542,7 +596,7 @@ func (a codexAdapter) Task(ctx context.Context, req RunRequest) (RunResult, erro
 	}
 	args = append(args, splitArgs(req.ExtraArgs)...)
 	args = append(args, "-")
-	cmd := a.runner.Run(ctx, "codex", args, req.Root, req.Prompt, env(req))
+	cmd := runProviderCommand(ctx, a.runner, req, "codex", args)
 	final, _ := os.ReadFile(output)
 	r := resultFromCommand(cmd)
 	r.Text = strings.TrimSpace(string(final))
@@ -584,7 +638,7 @@ func (a codexAdapter) Chat(ctx context.Context, req RunRequest) (RunResult, erro
 		args = append(args[:len(args)-1], extraArgs...)
 		args = append(args, last)
 	}
-	cmd := runCommand(ctx, a.runner, req, executable(req, "codex"), args, func(raw string) (string, []string) {
+	cmd := runCommand(ctx, a.runner, req, "codex", args, func(raw string) (string, []string) {
 		text, steps, _ := ParseCodexEvents(raw, "")
 		return text, steps
 	})
@@ -608,7 +662,7 @@ func (a piAdapter) Task(ctx context.Context, req RunRequest) (RunResult, error) 
 		args = append(args, "--model", req.Model)
 	}
 	args = append(args, splitArgs(req.ExtraArgs)...)
-	cmd := a.runner.Run(ctx, "pi", args, req.Root, req.Prompt, env(req))
+	cmd := runProviderCommand(ctx, a.runner, req, "pi", args)
 	r := resultFromCommand(cmd)
 	r.Outcome = ParseOutcome(r.Stdout)
 	return r, nil
@@ -631,7 +685,7 @@ func (a piAdapter) Chat(ctx context.Context, req RunRequest) (RunResult, error) 
 		args = append(args, "--model", req.Model)
 	}
 	args = append(args, splitArgs(req.ExtraArgs)...)
-	cmd := runCommand(ctx, a.runner, req, executable(req, "pi"), args, ParsePiEvents)
+	cmd := runCommand(ctx, a.runner, req, "pi", args, ParsePiEvents)
 	text, steps := ParsePiEvents(cmd.Stdout)
 	r := resultFromCommand(cmd)
 	r.Text = text

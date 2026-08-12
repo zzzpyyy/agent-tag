@@ -1274,11 +1274,15 @@ func TestWebTaskBoardLifecycleAndProviderConfig(t *testing.T) {
 	defer server.Close()
 	client := authenticatedClient(t, server.URL, "task-user")
 
-	configured := requestJSON(t, client, http.MethodPatch, server.URL+"/api/providers/codex", map[string]any{"executable": "/custom/codex", "extraArgs": "--profile team", "timeoutSeconds": 45})
-	_ = configured.Body.Close()
+	configured := requestJSON(t, client, http.MethodPatch, server.URL+"/api/providers/codex", map[string]any{"executable": "/custom/codex", "launchCommand": "my-codex", "extraArgs": "--profile team", "timeoutSeconds": 45})
 	if configured.StatusCode != http.StatusOK {
 		t.Fatalf("provider config status=%d", configured.StatusCode)
 	}
+	var providerConfigResponse ProviderConfig
+	if err := json.NewDecoder(configured.Body).Decode(&providerConfigResponse); err != nil || providerConfigResponse.LaunchCommand != "my-codex" {
+		t.Fatalf("provider config=%+v err=%v", providerConfigResponse, err)
+	}
+	_ = configured.Body.Close()
 	firstResponse := postJSON(t, client, server.URL+"/api/tasks", map[string]any{"title": "API", "scopes": []string{"internal/api"}})
 	var first Task
 	if err := json.NewDecoder(firstResponse.Body).Decode(&first); err != nil {

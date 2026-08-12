@@ -425,6 +425,7 @@ $("#provider-health-list").onclick = (event) => {
   $("#provider-config-name").value = provider;
   $("#provider-dialog-title").textContent = `配置 ${providerLabel(provider)}`;
   $("#provider-executable").value = config.executable || "";
+  $("#provider-launch-command").value = config.launchCommand || "";
   $("#provider-extra-args").value = config.extraArgs || "";
   $("#provider-timeout").value = String(config.timeoutSeconds || 300);
   $("#provider-dialog").showModal();
@@ -434,7 +435,7 @@ $("#provider-form").onsubmit = async (event) => {
   event.preventDefault();
   const provider = $("#provider-config-name").value;
   try {
-    await api(`/api/providers/${provider}`, { method:"PATCH", body:JSON.stringify({ executable:$("#provider-executable").value, extraArgs:$("#provider-extra-args").value, timeoutSeconds:Number($("#provider-timeout").value) }) });
+    await api(`/api/providers/${provider}`, { method:"PATCH", body:JSON.stringify({ executable:$("#provider-executable").value, launchCommand:$("#provider-launch-command").value, extraArgs:$("#provider-extra-args").value, timeoutSeconds:Number($("#provider-timeout").value) }) });
     $("#provider-dialog").close();
     await loadProviderStatuses();
   } catch (error) { toast(error.message); }
