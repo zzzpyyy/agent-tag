@@ -12,9 +12,10 @@ const els = {
   chatView: $(".chat"), settingsView: $("#settings-view"), conversationSettings: $("#conversation-settings"), globalSettings: $("#global-settings"),
   skillsView: $("#skills-view"), tabSkills: $("#tab-skills"), conversationSkills: $("#conversation-skills"), skillList: $("#skill-list"), skillAssignments: $("#skill-assignments"), skillDialog: $("#skill-dialog"), skillPreviewDialog: $("#skill-preview-dialog"),
   tasksView: $("#tasks-view"), tabTasks: $("#tab-tasks"), taskBoard: $("#task-board"),
+  artifactsView: $("#artifacts-view"), tabArtifacts: $("#tab-artifacts"), artifactList: $("#artifact-list"),
   scopeGlobal: $("#settings-global-scope"), scopeConversation: $("#settings-conversation-scope"),
-  settingRelay: $("#setting-auto-relay"), settingReview: $("#setting-auto-review"), settingRounds: $("#setting-review-rounds"), settingSkillMode: $("#setting-skill-mode"), settingSkillShell: $("#setting-skill-shell"), settingSkillNetwork: $("#setting-skill-network"), settingSkillWrite: $("#setting-skill-write"),
-  newDialog: $("#new-dialog"), agentDialog: $("#agent-dialog"), conversationDialog: $("#conversation-dialog"), toast: $("#toast"),
+  settingRelay: $("#setting-auto-relay"), settingReview: $("#setting-auto-review"), settingRounds: $("#setting-review-rounds"), settingSkillMode: $("#setting-skill-mode"), settingSkillShell: $("#setting-skill-shell"), settingSkillNetwork: $("#setting-skill-network"), settingSkillWrite: $("#setting-skill-write"), settingTokenBudget: $("#setting-token-budget"), settingCostBudget: $("#setting-cost-budget"),
+  agentDialog: $("#agent-dialog"), conversationDialog: $("#conversation-dialog"), toast: $("#toast"),
 };
 let state = null;
 let currentUser = null;
@@ -24,12 +25,17 @@ let activeId = null;
 let renderedConversationId = null;
 let renderedMessageCount = 0;
 let activeView = "chat";
+let titleEditing = false;
+let titleBeforeEdit = "";
 let settingsScope = "conversation";
 let showArchived = false;
 let providerStatuses = null;
 let providerConfigs = [];
+let providerDescriptors = [];
+let installCapabilities = {};
 let maintenanceStatus = null;
 let auditEvents = [];
+let artifacts = [];
 const lastSubmitted = new Map();
 const olderMessages = new Map();
 const olderHasMore = new Map();
@@ -45,7 +51,7 @@ async function api(url, options) {
 }
 
 function initials(name) { return name.slice(0, 2).toUpperCase(); }
-function providerLabel(provider) { return ({ claude:"Claude Code", codex:"Codex CLI", pi:"Pi Agent" })[provider] || provider; }
+function providerLabel(provider) { return providerDescriptors.find((item) => item.name === provider)?.label || ({ claude:"Claude Code", codex:"Codex CLI", pi:"Pi Agent", command:"自定义命令" })[provider] || provider; }
 function providerStatus(provider) { return providerStatuses?.find((item) => item.provider === provider); }
 function isProviderInstalled(provider) { const status = providerStatus(provider); return !status || Boolean(status.installed); }
 function time(value) { return new Intl.DateTimeFormat("zh-CN", { hour:"2-digit", minute:"2-digit" }).format(new Date(value)); }
@@ -119,16 +125,19 @@ function render() {
   const showingSettings = activeView === "settings";
   const showingSkills = activeView === "skills";
   const showingTasks = activeView === "tasks";
-  els.chatView.hidden = showingSettings || showingSkills || showingTasks;
+  const showingArtifacts = activeView === "artifacts";
+  els.chatView.hidden = showingSettings || showingSkills || showingTasks || showingArtifacts;
   els.settingsView.hidden = !showingSettings;
   els.skillsView.hidden = !showingSkills;
   els.tasksView.hidden = !showingTasks;
+  els.artifactsView.hidden = !showingArtifacts;
   els.conversationSettings.disabled = !hasConversation;
   els.conversationSkills.disabled = !hasConversation;
   $("#conversation-manage").disabled = !hasConversation;
   els.globalSettings.classList.toggle("active", showingSettings && settingsScope === "global");
   els.tabSkills.classList.toggle("active", showingSkills);
   els.tabTasks.classList.toggle("active", showingTasks);
+  els.tabArtifacts.classList.toggle("active", showingArtifacts);
   els.empty.hidden = hasConversation; els.messages.hidden = !hasConversation; els.composer.hidden = !hasConversation;
   const globalScope = settingsScope === "global";
   const settings = globalScope ? (state.defaults || { reviewRounds:1, skillMode:"auto", allowSkillExecution:true }) : conversation;
@@ -151,12 +160,23 @@ function render() {
     els.settingSkillShell.checked = Boolean(permissions.shell);
     els.settingSkillNetwork.checked = Boolean(permissions.network);
     els.settingSkillWrite.checked = Boolean(permissions.write);
+    els.settingTokenBudget.value = String(settings.tokenBudget || 0);
+    els.settingCostBudget.value = String(settings.costBudgetUsd || 0);
+    const defaultAgentRow = $("#setting-default-agents-row");
+    $("#setting-default-agents-divider").hidden = !globalScope;
+    defaultAgentRow.hidden = !globalScope;
+    if (globalScope) {
+      const selected = new Set((settings.defaultParticipants || []).map((item) => item.provider));
+      const descriptors = providerDescriptors.filter((item) => item.supportsChat && item.name !== "command");
+      const choices = descriptors.length ? descriptors : [{ name:"claude", label:"Claude Code" }, { name:"codex", label:"Codex CLI" }, { name:"pi", label:"Pi Agent" }];
+      $("#setting-default-agent-options").innerHTML = choices.map((item) => `<label><input type="checkbox" data-default-provider="${escapeHtml(item.name)}" ${selected.has(item.name) ? "checked" : ""}>${escapeHtml(item.label || providerLabel(item.name))}</label>`).join("");
+    }
   }
   renderProviderStatuses();
   renderSkills(conversation);
   renderTasks();
-  if (!conversation) { els.title.textContent = "选择或新建一个对话"; els.members.innerHTML = ""; els.stack.innerHTML = ""; els.roundActions.hidden = true; return; }
-  els.title.textContent = conversation.title;
+  if (!conversation) { titleEditing = false; els.title.contentEditable = "false"; els.title.classList.remove("editing"); els.title.textContent = "选择或新建一个对话"; els.members.innerHTML = ""; els.stack.innerHTML = ""; els.roundActions.hidden = true; return; }
+  if (!titleEditing) els.title.textContent = conversation.title;
   els.stack.innerHTML = conversation.participants.map((p) => `<span class="mini-avatar ${p.provider} ${isProviderInstalled(p.provider) ? "" : "unavailable"}" title="${escapeHtml(p.name)}${isProviderInstalled(p.provider) ? "" : "（未安装）"}">${initials(p.name)}</span>`).join("");
   els.members.innerHTML = conversation.participants.map((p) => `<div class="member ${isProviderInstalled(p.provider) ? "" : "unavailable"}"><span class="member-avatar ${p.provider}">${initials(p.name)}</span><span><b>${escapeHtml(p.name)}</b><small>${providerLabel(p.provider)}${p.model ? ` · ${escapeHtml(p.model)}` : ""}</small></span><span class="member-flags">${isProviderInstalled(p.provider) ? "" : '<i class="provider-missing">未安装</i>'}${p.sessionId ? '<i class="session-live">SESSION</i>' : ""}${p.autoDiscuss ? '<i class="auto">AUTO</i>' : ""}</span><span class="member-actions"><button type="button" data-edit-agent="${escapeHtml(p.name)}" title="编辑">✎</button>${p.sessionId ? `<button type="button" data-reset-agent="${escapeHtml(p.name)}" title="重置会话">↻</button>` : ""}<button type="button" data-remove-agent="${escapeHtml(p.name)}" title="移除">×</button></span></div>`).join("");
   const recentMessages = state.chatMessages.filter((item) => item.conversationId === activeId);
@@ -174,9 +194,11 @@ function render() {
     const recordedSteps = !user && Array.isArray(message.steps) ? message.steps : [];
     const steps = !user && recordedSteps.length ? recordedSteps : (!user ? ["完成分析并组织回复"] : []);
     const process = steps.length ? `<details class="process"><summary><span>思考与执行</span><em>（${steps.length} 步）</em></summary><ol>${steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("")}</ol></details>` : "";
-    const artifacts = !user && Array.isArray(message.artifacts) && message.artifacts.length ? `<div class="message-artifacts">${message.artifacts.map((artifact) => `<span title="${escapeHtml(artifact.path)}">↳ ${escapeHtml(artifact.label)}</span>`).join("")}</div>` : "";
+    const artifactsMarkup = !user && Array.isArray(message.artifacts) && message.artifacts.length ? `<div class="message-artifacts">${message.artifacts.map((artifact) => artifact.id ? `<a href="/api/artifacts/${encodeURIComponent(artifact.id)}/content">↳ ${escapeHtml(artifact.label)}</a>` : `<span>↳ ${escapeHtml(artifact.label)}</span>`).join("")}</div>` : "";
+    const observation = message.observation; const usage = observation?.usage || {};
+    const runInfo = observation ? `<div class="run-observation"><span>${((observation.durationMs || 0)/1000).toFixed(1)}s</span>${usage.totalTokens ? `<span>${usage.totalTokens.toLocaleString()} tokens</span>` : ""}${usage.estimatedCostUsd ? `<span>≈ $${usage.estimatedCostUsd.toFixed(4)}</span>` : ""}${observation.model ? `<span>${escapeHtml(observation.model)}</span>` : ""}</div>` : "";
     const phaseLabel = message.phase === "synthesis" ? '<i class="phase-badge">综合</i>' : message.phase === "review" ? `<i class="phase-badge">评议 ${message.reviewRound || 1}</i>` : "";
-    return `<article class="message ${user ? "user" : message.provider}"><span class="avatar">${user ? "ME" : initials(message.author)}</span><div class="message-content"><div class="message-meta"><span>${escapeHtml(message.author)}</span>${phaseLabel}<time>${time(message.createdAt)}</time></div>${process}${artifacts}<div class="bubble ${user ? "" : "markdown"}">${renderedBody}</div></div></article>`;
+    return `<article class="message ${user ? "user" : message.provider}"><span class="avatar">${user ? "ME" : initials(message.author)}</span><div class="message-content"><div class="message-meta"><span>${escapeHtml(message.author)}</span>${phaseLabel}<time>${time(message.createdAt)}</time></div>${process}${artifactsMarkup}${runInfo}<div class="bubble ${user ? "" : "markdown"}">${renderedBody}</div></div></article>`;
   }).join("");
   const liveMarkup = liveReplies.map((reply) => {
     const steps = Array.isArray(reply.steps) ? reply.steps : [];
@@ -214,7 +236,7 @@ function render() {
     els.routeStatus.innerHTML = '<span class="pulse"></span><span>先终止当前回复，再重新发送</span>';
   } else if (!conversation.started) {
     els.input.placeholder = "首次消息请 @任意 Agent 开启会话…";
-    els.routeStatus.innerHTML = conversation.participants.map((p) => `<button type="button" data-mention="@${escapeHtml(p.name)}" ${isProviderInstalled(p.provider) ? "" : "disabled title=\"Agent 未安装\""}>@${escapeHtml(p.name)}</button>`).join("") + '<span>首次需 @</span>';
+    els.routeStatus.innerHTML = `<button type="button" data-mention="@all">@all</button>` + conversation.participants.map((p) => `<button type="button" data-mention="@${escapeHtml(p.name)}" ${isProviderInstalled(p.provider) ? "" : "disabled title=\"Agent 未安装\""}>@${escapeHtml(p.name)}</button>`).join("") + '<span>首次需 @</span>';
   } else if (conversation.autoRelay) {
     els.input.placeholder = "直接输入，群内 Agent 会同时抢答…";
     els.routeStatus.innerHTML = '<span class="pulse"></span><span>并行抢答已开启</span>';
@@ -230,13 +252,13 @@ function render() {
 function renderProviderStatuses() {
   const list = $("#provider-health-list");
   if (!providerStatuses) { list.innerHTML = '<span class="provider-checking">正在检测…</span>'; return; }
-  list.innerHTML = providerStatuses.map((item) => `<div class="provider-health-row"><i class="${item.installed ? "available" : "missing"}"></i><span><b>${providerLabel(item.provider)}</b><small>${escapeHtml(item.version || item.error || "版本未知")}</small></span><code title="${escapeHtml(item.path || "")}">${escapeHtml(item.path || "未安装")}</code><span class="provider-row-actions">${item.installed ? "" : `<button type="button" class="install" data-install-provider="${item.provider}">安装</button>`}<button type="button" data-config-provider="${item.provider}">配置</button></span></div>`).join("");
+  list.innerHTML = providerStatuses.map((item) => { const capability = installCapabilities[item.provider]; const install = item.installed ? "" : capability?.allowed ? `<button type="button" class="install" data-install-provider="${item.provider}">安装</button>` : `<button type="button" disabled title="${escapeHtml(capability?.reason || "由本机权限与策略决定")}">不可安装</button>`; return `<div class="provider-health-row"><i class="${item.installed ? "available" : "missing"}"></i><span><b>${providerLabel(item.provider)}</b><small>${escapeHtml(item.version || item.error || capability?.reason || "版本未知")}</small></span><code title="${escapeHtml(item.path || "")}">${escapeHtml(item.path || "未安装")}</code><span class="provider-row-actions">${install}<button type="button" data-config-provider="${item.provider}">配置</button></span></div>`; }).join("");
 }
 
 async function loadProviderStatuses() {
   providerStatuses = null;
   renderProviderStatuses();
-  try { const result = await api("/api/providers"); providerStatuses = result.providers; providerConfigs = result.configs || []; }
+  try { const result = await api("/api/providers"); providerStatuses = result.providers; providerConfigs = result.configs || []; providerDescriptors = result.descriptors || []; installCapabilities = result.installCapabilities || {}; const select = $("#agent-provider"); const selected = select.value; const chatProviders = providerDescriptors.filter((item) => item.supportsChat); if (chatProviders.length) select.innerHTML = chatProviders.map((item) => `<option value="${escapeHtml(item.name)}">${escapeHtml(item.label)}</option>`).join(""); if ([...select.options].some((item) => item.value === selected)) select.value = selected; }
   catch (error) { toast(error.message); providerStatuses = []; }
   renderProviderStatuses();
   if (state) render();
@@ -323,20 +345,36 @@ function renderTasks() {
   const agents = state.taskAgents || [];
   $("#task-agent-strip").innerHTML = agents.length ? agents.map((agent) => `<span class="task-agent ${agent.status}"><i></i>${escapeHtml(agent.name)} · ${providerLabel(agent.provider)}</span>`).join("") : '<span class="provider-checking">暂无运行中的 Worker</span>';
   const columns = [["pending","待处理"],["in_progress,cancel_requested","进行中"],["blocked","已阻塞"],["canceled","已取消"],["completed","已完成"]];
-  els.taskBoard.innerHTML = columns.map(([statuses,label]) => { const accepted = statuses.split(","); const items = tasks.filter((task) => accepted.includes(task.status)); return `<section class="task-column"><header><b>${label}</b><span>${items.length}</span></header><div>${items.map((task) => { const taskRuns = runs.filter((run) => run.taskId === task.id).sort((a,b) => b.startedAt.localeCompare(a.startedAt)); const latestRun = taskRuns[0]; return `<article class="task-card"><small>${task.id}${task.assignee ? ` · ${escapeHtml(task.assignee)}` : ""}${task.status === "cancel_requested" ? " · 正在取消" : ""}</small><h3>${escapeHtml(task.title)}</h3>${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}${task.depends?.length ? `<code>依赖：${task.depends.map(escapeHtml).join(", ")}</code>` : ""}${task.scopes?.length ? `<code>范围：${task.scopes.map(escapeHtml).join(", ")}</code>` : ""}${task.summary ? `<em>${escapeHtml(task.summary)}</em>` : ""}${task.lastError ? `<strong>${escapeHtml(task.lastError)}</strong>` : ""}${latestRun ? `<details class="task-log"><summary>运行日志 · ${escapeHtml(latestRun.agent)}</summary>${latestRun.stdout ? `<pre>${escapeHtml(latestRun.stdout)}</pre>` : ""}${latestRun.stderr ? `<pre class="stderr">${escapeHtml(latestRun.stderr)}</pre>` : ""}</details>` : ""}<footer>${task.status === "in_progress" ? `<button data-cancel-task="${task.id}">取消运行</button>` : ""}${!["in_progress","cancel_requested"].includes(task.status) ? `<button data-edit-task="${task.id}">编辑</button>` : ""}${!["in_progress","cancel_requested","pending"].includes(task.status) ? `<button data-retry-task="${task.id}">重试</button>` : ""}${!["in_progress","cancel_requested"].includes(task.status) ? `<button data-delete-task="${task.id}">删除</button>` : ""}</footer></article>`; }).join("") || '<span class="task-empty">暂无</span>'}</div></section>`; }).join("");
+  els.taskBoard.innerHTML = columns.map(([statuses,label]) => { const accepted = statuses.split(","); const items = tasks.filter((task) => accepted.includes(task.status)); return `<section class="task-column"><header><b>${label}</b><span>${items.length}</span></header><div>${items.map((task) => { const taskRuns = runs.filter((run) => run.taskId === task.id).sort((a,b) => b.startedAt.localeCompare(a.startedAt)); const latestRun = taskRuns[0]; const ready = latestRun?.integrationStatus === "ready"; const observation = latestRun?.observation; return `<article class="task-card"><small>${task.id}${task.assignee ? ` · ${escapeHtml(task.assignee)}` : ""}${task.status === "cancel_requested" ? " · 正在取消" : ""}</small><h3>${escapeHtml(task.title)}</h3>${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}${task.depends?.length ? `<code>依赖：${task.depends.map(escapeHtml).join(", ")}</code>` : ""}${task.scopes?.length ? `<code>范围：${task.scopes.map(escapeHtml).join(", ")}</code>` : ""}${task.summary ? `<em>${escapeHtml(task.summary)}</em>` : ""}${task.lastError ? `<strong>${escapeHtml(task.lastError)}</strong>` : ""}${observation ? `<div class="run-observation"><span>${((observation.durationMs || 0)/1000).toFixed(1)}s</span><span>${observation.usage?.totalTokens || 0} tokens</span><span>≈ $${(observation.usage?.estimatedCostUsd || 0).toFixed(4)}</span></div>` : ""}${latestRun?.branch ? `<code>${escapeHtml(latestRun.branch)} · ${escapeHtml(latestRun.integrationStatus || "isolated")}</code>` : ""}${latestRun ? `<details class="task-log"><summary>运行日志 · ${escapeHtml(latestRun.agent)}</summary>${latestRun.diffStat ? `<pre>${escapeHtml(latestRun.diffStat)}</pre>` : ""}${latestRun.stdout ? `<pre>${escapeHtml(latestRun.stdout)}</pre>` : ""}${latestRun.stderr ? `<pre class="stderr">${escapeHtml(latestRun.stderr)}</pre>` : ""}</details>` : ""}<footer>${ready ? `<button data-integrate-task="${task.id}">合并</button><button data-discard-task="${task.id}">丢弃分支</button>` : ""}${task.status === "in_progress" ? `<button data-cancel-task="${task.id}">取消运行</button>` : ""}${!["in_progress","cancel_requested"].includes(task.status) ? `<button data-edit-task="${task.id}">编辑</button>` : ""}${!["in_progress","cancel_requested","pending"].includes(task.status) ? `<button data-retry-task="${task.id}">重试</button>` : ""}${!["in_progress","cancel_requested"].includes(task.status) ? `<button data-delete-task="${task.id}">删除</button>` : ""}</footer></article>`; }).join("") || '<span class="task-empty">暂无</span>'}</div></section>`; }).join("");
 }
 
-function openNew() { $("#new-title").value = ""; els.newDialog.showModal(); setTimeout(() => $("#new-title").focus(), 50); }
-$("#new-chat").onclick = openNew; $("#empty-new").onclick = openNew;
+function renderArtifacts() { els.artifactList.innerHTML = artifacts.length ? artifacts.map((artifact) => `<article class="artifact-card"><h3>${escapeHtml(artifact.label)}</h3><p>${escapeHtml(artifact.agent)} · ${time(artifact.createdAt)} · ${formatBytes(artifact.size)}</p><code>SHA-256 ${escapeHtml(artifact.sha256)}</code><footer><a href="${artifact.contentUrl}">下载</a><button data-delete-artifact="${artifact.id}">删除</button></footer></article>`).join("") : '<span class="task-empty">暂无共享产物</span>'; }
+async function loadArtifacts() { try { artifacts = (await api("/api/artifacts")).artifacts || []; renderArtifacts(); } catch (error) { toast(error.message); } }
+
+async function createNewConversation(event) {
+  const button = event?.currentTarget;
+  if (button) button.disabled = true;
+  try {
+    const conversation = await api("/api/conversations", { method:"POST", body:JSON.stringify({ title:"" }) });
+    activeId = conversation.id; activeView = "chat"; rememberActiveConversation(); await refresh();
+    els.input.focus();
+  } catch (error) { toast(error.message); }
+  finally { if (button) button.disabled = false; }
+}
+$("#new-chat").onclick = createNewConversation; $("#empty-new").onclick = createNewConversation;
 function showView(view) { activeView = view; render(); }
 function showSettings(scope) { settingsScope = scope; showView("settings"); }
 els.globalSettings.onclick = () => showSettings("global");
 els.conversationSettings.onclick = () => { if (activeId) showSettings("conversation"); };
 els.tabSkills.onclick = () => showView("skills");
 els.tabTasks.onclick = () => showView("tasks");
+els.tabArtifacts.onclick = () => { showView("artifacts"); loadArtifacts(); };
 els.conversationSkills.onclick = () => showView("skills");
 $("#skills-back").onclick = () => showView("chat");
 $("#tasks-back").onclick = () => showView("chat");
+$("#artifacts-back").onclick = () => showView("chat");
+$("#refresh-artifacts").onclick = loadArtifacts;
+els.artifactList.onclick = async (event) => { const button = event.target.closest("[data-delete-artifact]"); if (!button || !window.confirm("删除这个产物？")) return; try { await api(`/api/artifacts/${button.dataset.deleteArtifact}`, { method:"DELETE", body:"{}" }); await loadArtifacts(); } catch (error) { toast(error.message); } };
 $("#new-task").onclick = () => { $("#task-form").reset(); $("#task-id").value = ""; $("#task-dialog-title").textContent = "新建任务"; $("#task-dialog").showModal(); };
 $("#task-form").onsubmit = async (event) => {
   if (event.submitter?.value === "cancel") return;
@@ -351,11 +389,15 @@ els.taskBoard.onclick = async (event) => {
   const cancel = event.target.closest("[data-cancel-task]");
   const edit = event.target.closest("[data-edit-task]");
   const remove = event.target.closest("[data-delete-task]");
+  const integrate = event.target.closest("[data-integrate-task]");
+  const discard = event.target.closest("[data-discard-task]");
   if (edit) { const task = (state.tasks || []).find((item) => item.id === edit.dataset.editTask); if (!task) return; $("#task-id").value = task.id; $("#task-dialog-title").textContent = `编辑 ${task.id}`; $("#task-title").value = task.title; $("#task-description").value = task.description || ""; $("#task-depends").value = (task.depends || []).join(", "); $("#task-scopes").value = (task.scopes || []).join(", "); $("#task-dialog").showModal(); return; }
   try {
     if (retry) await api(`/api/tasks/${retry.dataset.retryTask}`, { method:"PATCH", body:JSON.stringify({ retry:true }) });
     if (cancel && window.confirm(`取消正在运行的任务 ${cancel.dataset.cancelTask}？`)) await api(`/api/tasks/${cancel.dataset.cancelTask}`, { method:"PATCH", body:JSON.stringify({ cancel:true }) });
     if (remove && window.confirm(`删除任务 ${remove.dataset.deleteTask}？`)) await api(`/api/tasks/${remove.dataset.deleteTask}`, { method:"DELETE", body:"{}" });
+    if (integrate && window.confirm(`将任务 ${integrate.dataset.integrateTask} 的分支合并到当前分支？主工作区必须干净。`)) await api(`/api/tasks/${integrate.dataset.integrateTask}`, { method:"PATCH", body:JSON.stringify({ integrate:true }) });
+    if (discard && window.confirm(`永久丢弃任务 ${discard.dataset.discardTask} 的隔离分支？`)) await api(`/api/tasks/${discard.dataset.discardTask}`, { method:"PATCH", body:JSON.stringify({ discard:true }) });
     await refresh();
   } catch (error) { toast(error.message); }
 };
@@ -400,17 +442,12 @@ $("#provider-form").onsubmit = async (event) => {
 els.list.onclick = (event) => { const button = event.target.closest("[data-id]"); if (button) { activeId = button.dataset.id; activeView = "chat"; rememberActiveConversation(); render(); } };
 $("#archived-conversation-list").onclick = els.list.onclick;
 $("#archived-toggle").onclick = () => { showArchived = !showArchived; render(); };
-$("#new-form").onsubmit = async (event) => {
-  if (event.submitter?.value === "cancel") return;
-  event.preventDefault();
-  try { const conversation = await api("/api/conversations", { method:"POST", body:JSON.stringify({ title:$("#new-title").value }) }); activeId = conversation.id; activeView = "chat"; rememberActiveConversation(); els.newDialog.close(); await refresh(); }
-  catch (error) { toast(error.message); }
-};
 function openAgentEditor(participant = null) {
   $("#agent-original-name").value = participant?.name || "";
   $("#agent-name").value = participant?.name || "";
   $("#agent-provider").value = participant?.provider || "codex";
   $("#agent-model").value = participant?.model || "";
+  $("#agent-command").value = participant?.command || "";
   $("#agent-auto-discuss").checked = participant ? Boolean(participant.autoDiscuss) : true;
   $("#agent-dialog-title").textContent = participant ? "编辑 Agent" : "添加 Agent";
   updateAgentProviderStatus();
@@ -422,6 +459,7 @@ function updateAgentProviderStatus() {
   const note = $("#agent-provider-status");
   note.classList.toggle("missing", Boolean(status && !status.installed));
   note.textContent = !status ? "正在检测本机 Agent…" : status.installed ? `已安装：${status.version || status.path || providerLabel(provider)}` : `${providerLabel(provider)} 尚未安装；保存时可选择是否安装。`;
+  $("#agent-command-row").hidden = provider !== "command";
 }
 $("#agent-provider").onchange = updateAgentProviderStatus;
 $("#add-agent").onclick = () => { if (activeId) openAgentEditor(); };
@@ -429,7 +467,7 @@ $("#agent-form").onsubmit = async (event) => {
   if (event.submitter?.value === "cancel") return;
   event.preventDefault();
   const originalName = $("#agent-original-name").value;
-  const payload = { name:$("#agent-name").value, provider:$("#agent-provider").value, model:$("#agent-model").value, autoDiscuss:$("#agent-auto-discuss").checked };
+  const payload = { name:$("#agent-name").value, provider:$("#agent-provider").value, model:$("#agent-model").value, command:$("#agent-command").value, autoDiscuss:$("#agent-auto-discuss").checked };
   const endpoint = originalName ? `/api/conversations/${activeId}/participants/${encodeURIComponent(originalName)}` : `/api/conversations/${activeId}/participants`;
   try {
     if (!isProviderInstalled(payload.provider)) {
@@ -462,16 +500,31 @@ els.members.onclick = async (event) => {
 $("#conversation-manage").onclick = () => {
   const conversation = state.conversations.find((item) => item.id === activeId);
   if (!conversation) return;
-  $("#manage-conversation-title").value = conversation.title;
   $("#archive-conversation").textContent = conversation.archived ? "恢复" : "归档";
   els.conversationDialog.showModal();
 };
-$("#conversation-form").onsubmit = async (event) => {
-  if (event.submitter?.value === "cancel") return;
-  event.preventDefault();
-  try { await api(`/api/conversations/${activeId}`, { method:"PATCH", body:JSON.stringify({ title:$("#manage-conversation-title").value }) }); els.conversationDialog.close(); await refresh(); }
-  catch (error) { toast(error.message); }
+function startTitleEdit() {
+  const conversation = state?.conversations.find((item) => item.id === activeId);
+  if (!conversation || titleEditing) return;
+  titleEditing = true; titleBeforeEdit = conversation.title;
+  els.title.contentEditable = "plaintext-only"; els.title.classList.add("editing"); els.title.focus();
+  const selection = window.getSelection(); const range = document.createRange(); range.selectNodeContents(els.title); selection.removeAllRanges(); selection.addRange(range);
+}
+async function finishTitleEdit(save) {
+  if (!titleEditing) return;
+  const nextTitle = els.title.textContent.trim();
+  titleEditing = false; els.title.contentEditable = "false"; els.title.classList.remove("editing");
+  if (!save || !nextTitle) { els.title.textContent = titleBeforeEdit; if (save && !nextTitle) toast("对话名称不能为空"); return; }
+  if (nextTitle === titleBeforeEdit) return;
+  try { await api(`/api/conversations/${activeId}`, { method:"PATCH", body:JSON.stringify({ title:nextTitle }) }); await refresh(); }
+  catch (error) { els.title.textContent = titleBeforeEdit; toast(error.message); }
+}
+els.title.onclick = startTitleEdit;
+els.title.onkeydown = (event) => {
+  if (event.key === "Enter") { event.preventDefault(); void finishTitleEdit(true); }
+  if (event.key === "Escape") { event.preventDefault(); void finishTitleEdit(false); els.title.blur(); }
 };
+els.title.onblur = () => { if (titleEditing) void finishTitleEdit(true); };
 $("#archive-conversation").onclick = async () => {
   const conversation = state.conversations.find((item) => item.id === activeId);
   if (!conversation) return;
@@ -612,6 +665,14 @@ function updateSkillPermissions() { return updateSettings({ skillPermissions:{ s
 els.settingSkillShell.onchange = updateSkillPermissions;
 els.settingSkillNetwork.onchange = updateSkillPermissions;
 els.settingSkillWrite.onchange = updateSkillPermissions;
+els.settingTokenBudget.onchange = () => updateSettings({ tokenBudget:Number(els.settingTokenBudget.value) || 0 });
+els.settingCostBudget.onchange = () => updateSettings({ costBudgetUsd:Number(els.settingCostBudget.value) || 0 });
+$("#setting-default-agent-options").onchange = async () => {
+  const providers = [...document.querySelectorAll("[data-default-provider]:checked")].map((item) => item.dataset.defaultProvider);
+  if (!providers.length) { toast("至少保留一个默认 Agent"); render(); return; }
+  const names = { claude:"cc", codex:"codex", pi:"pi" };
+  await updateSettings({ defaultParticipants:providers.map((provider) => ({ name:names[provider] || provider, provider, autoDiscuss:provider !== "claude" })) });
+};
 
 $("#auth-login-tab").onclick = () => setAuthMode("login");
 $("#auth-register-tab").onclick = () => setAuthMode("register");

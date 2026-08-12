@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,14 +35,15 @@ type RunProgress struct {
 }
 
 type RunResult struct {
-	Code      int
-	Stdout    string
-	Stderr    string
-	Text      string
-	Steps     []string
-	SessionID *string
-	Outcome   *Outcome
-	Artifacts []RunArtifact
+	Code        int
+	Stdout      string
+	Stderr      string
+	Text        string
+	Steps       []string
+	SessionID   *string
+	Outcome     *Outcome
+	Artifacts   []RunArtifact
+	Observation RunObservation
 }
 
 type RunArtifact struct {
@@ -275,26 +277,180 @@ type Provider interface {
 	Chat(context.Context, RunRequest) (RunResult, error)
 }
 
-type Providers struct{ adapters map[string]Provider }
+type ProviderDescriptor struct {
+	Name              string `json:"name"`
+	Label             string `json:"label"`
+	SupportsTask      bool   `json:"supportsTask"`
+	SupportsChat      bool   `json:"supportsChat"`
+	SupportsSession   bool   `json:"supportsSession"`
+	SupportsStreaming bool   `json:"supportsStreaming"`
+	BuiltIn           bool   `json:"builtIn"`
+}
+
+type providerRegistration struct {
+	descriptor ProviderDescriptor
+	adapter    Provider
+}
+
+type Providers struct {
+	registrations map[string]providerRegistration
+}
 
 func NewProviders(runner CommandRunner) *Providers {
-	return &Providers{adapters: map[string]Provider{
-		"claude": claudeAdapter{runner}, "codex": codexAdapter{runner}, "pi": piAdapter{runner}, "command": commandAdapter{runner},
-	}}
+	p := &Providers{registrations: map[string]providerRegistration{}}
+	p.Register(ProviderDescriptor{Name: "claude", Label: "Claude Code", SupportsTask: true, SupportsChat: true, SupportsSession: true, SupportsStreaming: true, BuiltIn: true}, claudeAdapter{runner})
+	p.Register(ProviderDescriptor{Name: "codex", Label: "Codex CLI", SupportsTask: true, SupportsChat: true, SupportsSession: true, SupportsStreaming: true, BuiltIn: true}, codexAdapter{runner})
+	p.Register(ProviderDescriptor{Name: "pi", Label: "Pi Agent", SupportsTask: true, SupportsChat: true, SupportsSession: true, SupportsStreaming: true, BuiltIn: true}, piAdapter{runner})
+	p.Register(ProviderDescriptor{Name: "command", Label: "Custom command", SupportsTask: true, SupportsChat: true, SupportsStreaming: true, BuiltIn: true}, commandAdapter{runner})
+	return p
 }
+
+func (p *Providers) Register(descriptor ProviderDescriptor, adapter Provider) {
+	name := strings.TrimSpace(descriptor.Name)
+	if name == "" || adapter == nil {
+		return
+	}
+	descriptor.Name = name
+	p.registrations[name] = providerRegistration{descriptor: descriptor, adapter: adapter}
+}
+
+func (p *Providers) Descriptors() []ProviderDescriptor {
+	result := make([]ProviderDescriptor, 0, len(p.registrations))
+	for _, registration := range p.registrations {
+		result = append(result, registration.descriptor)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })
+	return result
+}
+
+func (p *Providers) Supports(name string, chat bool) bool {
+	registration, ok := p.registrations[name]
+	if !ok {
+		return false
+	}
+	if chat {
+		return registration.descriptor.SupportsChat
+	}
+	return registration.descriptor.SupportsTask
+}
+
+func observeRun(req RunRequest, started time.Time, result RunResult, err error) RunResult {
+	completed := time.Now().UTC()
+	result.Observation.Provider = req.Provider
+	result.Observation.Model = req.Model
+	result.Observation.StartedAt = started.UTC().Format(time.RFC3339Nano)
+	result.Observation.CompletedAt = completed.Format(time.RFC3339Nano)
+	result.Observation.DurationMS = completed.Sub(started).Milliseconds()
+	result.Observation.ExitCode = result.Code
+	result.Observation.Usage = usageFromEvents(result.Stdout)
+	if err != nil || result.Code != 0 {
+		result.Observation.Status = "failed"
+		result.Observation.ErrorClass = classifyFailureClass(result.Stderr, err)
+	} else {
+		result.Observation.Status = "completed"
+	}
+	return result
+}
+
+func usageFromEvents(raw string) RunUsage {
+	usage := RunUsage{}
+	var visit func(any)
+	integer := func(value any) int64 {
+		switch number := value.(type) {
+		case float64:
+			return int64(number)
+		case json.Number:
+			result, _ := number.Int64()
+			return result
+		default:
+			return 0
+		}
+	}
+	decimal := func(value any) float64 {
+		switch number := value.(type) {
+		case float64:
+			return number
+		case json.Number:
+			result, _ := number.Float64()
+			return result
+		default:
+			return 0
+		}
+	}
+	visit = func(value any) {
+		switch item := value.(type) {
+		case map[string]any:
+			for key, child := range item {
+				normalized := strings.ToLower(strings.ReplaceAll(key, "-", "_"))
+				switch normalized {
+				case "input_tokens", "inputtokens":
+					usage.InputTokens = max(usage.InputTokens, integer(child))
+				case "output_tokens", "outputtokens":
+					usage.OutputTokens = max(usage.OutputTokens, integer(child))
+				case "cached_input_tokens", "cache_read_input_tokens", "cachedtokens":
+					usage.CachedTokens = max(usage.CachedTokens, integer(child))
+				case "total_tokens", "totaltokens":
+					usage.TotalTokens = max(usage.TotalTokens, integer(child))
+				case "total_cost_usd", "cost_usd", "estimated_cost_usd":
+					usage.EstimatedCostUSD = max(usage.EstimatedCostUSD, decimal(child))
+				}
+				visit(child)
+			}
+		case []any:
+			for _, child := range item {
+				visit(child)
+			}
+		}
+	}
+	for _, event := range jsonEvents(raw) {
+		visit(event)
+	}
+	if usage.TotalTokens == 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
+	return usage
+}
+
+func classifyFailureClass(stderr string, err error) string {
+	value := strings.ToLower(stderr)
+	if err != nil {
+		value += " " + strings.ToLower(err.Error())
+	}
+	switch {
+	case strings.Contains(value, "unauthorized"), strings.Contains(value, "not logged in"), strings.Contains(value, "authentication"):
+		return "authentication"
+	case strings.Contains(value, "rate limit"), strings.Contains(value, "too many requests"):
+		return "rate_limit"
+	case strings.Contains(value, "timeout"), strings.Contains(value, "deadline exceeded"):
+		return "timeout"
+	case strings.Contains(value, "permission denied"), strings.Contains(value, "operation not permitted"):
+		return "permission"
+	case strings.Contains(value, "not found"), strings.Contains(value, "no such file"):
+		return "unavailable"
+	case strings.TrimSpace(value) != "":
+		return "provider"
+	default:
+		return ""
+	}
+}
+
 func (p *Providers) Task(ctx context.Context, req RunRequest) (RunResult, error) {
-	a := p.adapters[req.Provider]
-	if a == nil {
+	registration, ok := p.registrations[req.Provider]
+	if !ok || !registration.descriptor.SupportsTask {
 		return RunResult{}, fmt.Errorf("unknown provider: %s", req.Provider)
 	}
-	return a.Task(ctx, req)
+	started := time.Now()
+	result, err := registration.adapter.Task(ctx, req)
+	return observeRun(req, started, result, err), err
 }
 func (p *Providers) Chat(ctx context.Context, req RunRequest) (RunResult, error) {
-	a := p.adapters[req.Provider]
-	if a == nil {
+	registration, ok := p.registrations[req.Provider]
+	if !ok || !registration.descriptor.SupportsChat {
 		return RunResult{}, fmt.Errorf("unknown provider: %s", req.Provider)
 	}
-	return a.Chat(ctx, req)
+	started := time.Now()
+	result, err := registration.adapter.Chat(ctx, req)
+	return observeRun(req, started, result, err), err
 }
 
 func env(req RunRequest) map[string]string {
@@ -333,7 +489,7 @@ func runCommand(ctx context.Context, runner CommandRunner, req RunRequest, name 
 type claudeAdapter struct{ runner CommandRunner }
 
 func (a claudeAdapter) Task(ctx context.Context, req RunRequest) (RunResult, error) {
-	args := []string{"-p", "--output-format", "text", "--permission-mode", "acceptEdits", "--name", req.AgentName}
+	args := []string{"-p", "--output-format", "text", "--permission-mode", "acceptEdits"}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
@@ -348,7 +504,7 @@ func (a claudeAdapter) Chat(ctx context.Context, req RunRequest) (RunResult, err
 	if permissions.Shell || permissions.Network || permissions.Write {
 		permissionMode = "acceptEdits"
 	}
-	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", permissionMode, "--name", req.AgentName}
+	args := []string{"-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", permissionMode}
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
@@ -496,8 +652,16 @@ func (a commandAdapter) Task(ctx context.Context, req RunRequest) (RunResult, er
 	r.Outcome = ParseOutcome(r.Stdout)
 	return r, nil
 }
-func (a commandAdapter) Chat(context.Context, RunRequest) (RunResult, error) {
-	return RunResult{}, errors.New("command provider does not support chat")
+func (a commandAdapter) Chat(ctx context.Context, req RunRequest) (RunResult, error) {
+	parts := splitArgs(req.Command)
+	if len(parts) == 0 {
+		return RunResult{}, errors.New("custom command provider requires a command")
+	}
+	parse := func(raw string) (string, []string) { return strings.TrimSpace(raw), nil }
+	cmd := runCommand(ctx, a.runner, req, parts[0], append(parts[1:], splitArgs(req.ExtraArgs)...), parse)
+	result := resultFromCommand(cmd)
+	result.Text = strings.TrimSpace(cmd.Stdout)
+	return result, nil
 }
 
 func ParseOutcome(text string) *Outcome {

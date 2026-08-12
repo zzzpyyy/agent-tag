@@ -24,6 +24,13 @@ type DiscussionSettings struct {
 	SkillMode           string           `json:"skillMode"`
 	AllowSkillExecution bool             `json:"allowSkillExecution"`
 	SkillPermissions    SkillPermissions `json:"skillPermissions"`
+	TokenBudget         int64            `json:"tokenBudget,omitempty"`
+	CostBudgetUSD       float64          `json:"costBudgetUsd,omitempty"`
+	DefaultParticipants []Participant    `json:"defaultParticipants,omitempty"`
+}
+
+func defaultParticipants() []Participant {
+	return []Participant{{Name: "cc", Provider: "claude"}, {Name: "codex", Provider: "codex", AutoDiscuss: true}}
 }
 
 type SkillPermissions struct {
@@ -81,17 +88,44 @@ type Task struct {
 }
 
 type TaskRun struct {
-	ID          string `json:"id"`
-	TaskID      string `json:"taskId"`
-	Agent       string `json:"agent"`
-	Provider    string `json:"provider"`
-	StartedAt   string `json:"startedAt"`
-	CompletedAt string `json:"completedAt,omitempty"`
-	Status      string `json:"status"`
-	ExitCode    int    `json:"exitCode"`
-	Stdout      string `json:"stdout,omitempty"`
-	Stderr      string `json:"stderr,omitempty"`
-	Summary     string `json:"summary,omitempty"`
+	ID                string         `json:"id"`
+	TaskID            string         `json:"taskId"`
+	Agent             string         `json:"agent"`
+	Provider          string         `json:"provider"`
+	StartedAt         string         `json:"startedAt"`
+	CompletedAt       string         `json:"completedAt,omitempty"`
+	Status            string         `json:"status"`
+	ExitCode          int            `json:"exitCode"`
+	Stdout            string         `json:"stdout,omitempty"`
+	Stderr            string         `json:"stderr,omitempty"`
+	Summary           string         `json:"summary,omitempty"`
+	Observation       RunObservation `json:"observation"`
+	Workspace         string         `json:"workspace,omitempty"`
+	Branch            string         `json:"branch,omitempty"`
+	BaseCommit        string         `json:"baseCommit,omitempty"`
+	HeadCommit        string         `json:"headCommit,omitempty"`
+	DiffStat          string         `json:"diffStat,omitempty"`
+	IntegrationStatus string         `json:"integrationStatus,omitempty"`
+}
+
+type RunUsage struct {
+	InputTokens      int64   `json:"inputTokens,omitempty"`
+	OutputTokens     int64   `json:"outputTokens,omitempty"`
+	CachedTokens     int64   `json:"cachedTokens,omitempty"`
+	TotalTokens      int64   `json:"totalTokens,omitempty"`
+	EstimatedCostUSD float64 `json:"estimatedCostUsd,omitempty"`
+}
+
+type RunObservation struct {
+	Provider    string   `json:"provider,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	StartedAt   string   `json:"startedAt,omitempty"`
+	CompletedAt string   `json:"completedAt,omitempty"`
+	DurationMS  int64    `json:"durationMs,omitempty"`
+	ExitCode    int      `json:"exitCode,omitempty"`
+	Status      string   `json:"status,omitempty"`
+	ErrorClass  string   `json:"errorClass,omitempty"`
+	Usage       RunUsage `json:"usage"`
 }
 
 type Agent struct {
@@ -123,6 +157,7 @@ type Participant struct {
 	SessionID         *string  `json:"sessionId"`
 	LastSeenMessageID *string  `json:"lastSeenMessageId"`
 	SkillIDs          []string `json:"skillIds"`
+	Command           *string  `json:"command,omitempty"`
 }
 
 type Conversation struct {
@@ -139,29 +174,49 @@ type Conversation struct {
 	SkillMode           string           `json:"skillMode"`
 	AllowSkillExecution bool             `json:"allowSkillExecution"`
 	SkillPermissions    SkillPermissions `json:"skillPermissions"`
+	TokenBudget         int64            `json:"tokenBudget,omitempty"`
+	CostBudgetUSD       float64          `json:"costBudgetUsd,omitempty"`
 	Participants        []Participant    `json:"participants"`
 }
 
 type ChatMessage struct {
-	ID               string         `json:"id"`
-	ConversationID   string         `json:"conversationId"`
-	RoundID          string         `json:"roundId,omitempty"`
-	Phase            string         `json:"phase,omitempty"`
-	ReviewRound      int            `json:"reviewRound,omitempty"`
-	SourceMessageIDs []string       `json:"sourceMessageIds,omitempty"`
-	Author           string         `json:"author"`
-	Provider         *string        `json:"provider"`
-	Kind             string         `json:"kind"`
-	Body             string         `json:"body"`
-	Steps            []string       `json:"steps"`
-	Artifacts        []ChatArtifact `json:"artifacts,omitempty"`
-	RetryAgent       string         `json:"retryAgent,omitempty"`
-	CreatedAt        string         `json:"createdAt"`
+	ID               string          `json:"id"`
+	ConversationID   string          `json:"conversationId"`
+	RoundID          string          `json:"roundId,omitempty"`
+	Phase            string          `json:"phase,omitempty"`
+	ReviewRound      int             `json:"reviewRound,omitempty"`
+	SourceMessageIDs []string        `json:"sourceMessageIds,omitempty"`
+	Author           string          `json:"author"`
+	Provider         *string         `json:"provider"`
+	Kind             string          `json:"kind"`
+	Body             string          `json:"body"`
+	Steps            []string        `json:"steps"`
+	Artifacts        []ChatArtifact  `json:"artifacts,omitempty"`
+	RetryAgent       string          `json:"retryAgent,omitempty"`
+	Observation      *RunObservation `json:"observation,omitempty"`
+	CreatedAt        string          `json:"createdAt"`
 }
 
 type ChatArtifact struct {
-	Path  string `json:"path"`
-	Label string `json:"label"`
+	ID        string `json:"id,omitempty"`
+	Path      string `json:"path,omitempty"`
+	Label     string `json:"label"`
+	MediaType string `json:"mediaType,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+}
+
+type ArtifactRecord struct {
+	ID             string `json:"id"`
+	OwnerID        string `json:"ownerId"`
+	ConversationID string `json:"conversationId"`
+	Agent          string `json:"agent"`
+	Path           string `json:"path"`
+	Label          string `json:"label"`
+	MediaType      string `json:"mediaType"`
+	Size           int64  `json:"size"`
+	SHA256         string `json:"sha256"`
+	CreatedAt      string `json:"createdAt"`
 }
 
 type State struct {
@@ -208,7 +263,7 @@ func FindRoot(start string) (string, error) {
 func NewState(name string) State {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	permissions := SkillPermissions{Shell: true, Network: true, Write: true}
-	return State{Version: stateVersion, Team: Team{Name: name, CreatedAt: now}, Defaults: DiscussionSettings{ReviewRounds: 1, SkillMode: "auto", AllowSkillExecution: true, SkillPermissions: permissions}, Users: []User{}, LoginSessions: []LoginSession{}, Skills: []ManagedSkill{}, Tasks: []Task{}, TaskRuns: []TaskRun{}, Agents: []Agent{}, Messages: []MailMessage{}, Conversations: []Conversation{}, ChatMessages: []ChatMessage{}}
+	return State{Version: stateVersion, Team: Team{Name: name, CreatedAt: now}, Defaults: DiscussionSettings{ReviewRounds: 1, SkillMode: "auto", AllowSkillExecution: true, SkillPermissions: permissions, DefaultParticipants: defaultParticipants()}, Users: []User{}, LoginSessions: []LoginSession{}, Skills: []ManagedSkill{}, Tasks: []Task{}, TaskRuns: []TaskRun{}, Agents: []Agent{}, Messages: []MailMessage{}, Conversations: []Conversation{}, ChatMessages: []ChatMessage{}}
 }
 
 func normalizedSkillPermissions(legacy bool, permissions SkillPermissions) SkillPermissions {
@@ -231,6 +286,14 @@ func Init(root, name string, force bool) error {
 }
 
 func (s *Store) Read() (State, error) {
+	return s.read(true)
+}
+
+func (s *Store) ReadMetadata() (State, error) {
+	return s.read(false)
+}
+
+func (s *Store) read(loadCollections bool) (State, error) {
 	raw, err := os.ReadFile(StatePath(s.Root))
 	if err != nil {
 		return State{}, err
@@ -282,8 +345,18 @@ func (s *Store) Read() (State, error) {
 	if state.ChatMessages == nil {
 		state.ChatMessages = []ChatMessage{}
 	}
-	if _, err := loadSQLiteCollections(s.Root, &state); err != nil {
-		return State{}, err
+	if _, statErr := os.Stat(DatabasePath(s.Root)); errors.Is(statErr, os.ErrNotExist) && (len(state.ChatMessages) > 0 || len(state.TaskRuns) > 0) {
+		if err := syncSQLiteCollections(s.Root, state); err != nil {
+			return State{}, fmt.Errorf("migrate legacy collections: %w", err)
+		}
+	}
+	if loadCollections {
+		if _, err := loadSQLiteCollections(s.Root, &state); err != nil {
+			return State{}, err
+		}
+	} else {
+		state.ChatMessages = nil
+		state.TaskRuns = nil
 	}
 	if state.Defaults.ReviewRounds < 1 {
 		state.Defaults.ReviewRounds = 1
@@ -293,6 +366,9 @@ func (s *Store) Read() (State, error) {
 	}
 	state.Defaults.SkillMode = normalizedSkillMode(state.Defaults.SkillMode)
 	state.Defaults.SkillPermissions = normalizedSkillPermissions(state.Defaults.AllowSkillExecution, state.Defaults.SkillPermissions)
+	if len(state.Defaults.DefaultParticipants) == 0 {
+		state.Defaults.DefaultParticipants = defaultParticipants()
+	}
 	for i := range state.Users {
 		if state.Users[i].Providers == nil {
 			state.Users[i].Providers = []ProviderConfig{}
@@ -305,6 +381,9 @@ func (s *Store) Read() (State, error) {
 		}
 		state.Users[i].Defaults.SkillMode = normalizedSkillMode(state.Users[i].Defaults.SkillMode)
 		state.Users[i].Defaults.SkillPermissions = normalizedSkillPermissions(state.Users[i].Defaults.AllowSkillExecution, state.Users[i].Defaults.SkillPermissions)
+		if len(state.Users[i].Defaults.DefaultParticipants) == 0 {
+			state.Users[i].Defaults.DefaultParticipants = defaultParticipants()
+		}
 	}
 	for ci := range state.Conversations {
 		c := &state.Conversations[ci]
@@ -334,6 +413,14 @@ func (s *Store) Read() (State, error) {
 }
 
 func (s *Store) Update(fn func(*State) error) error {
+	return s.update(false, fn)
+}
+
+func (s *Store) UpdateMetadata(fn func(*State) error) error {
+	return s.update(false, fn)
+}
+
+func (s *Store) update(_ bool, fn func(*State) error) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, err := acquireLock(s.Root, 10*time.Second)
@@ -341,14 +428,14 @@ func (s *Store) Update(fn func(*State) error) error {
 		return err
 	}
 	defer release()
-	state, err := s.Read()
+	state, err := s.ReadMetadata()
 	if err != nil {
 		return err
 	}
 	if err := fn(&state); err != nil {
 		return err
 	}
-	if err := syncSQLiteCollections(s.Root, state); err != nil {
+	if err := upsertCollections(s.Root, state.ChatMessages, state.TaskRuns); err != nil {
 		return err
 	}
 	return writeStateMetadata(s.Root, state)

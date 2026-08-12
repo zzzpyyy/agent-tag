@@ -154,7 +154,7 @@ func (s *WebServer) updateSkill(w http.ResponseWriter, r *http.Request, id strin
 }
 
 func (s *WebServer) deleteSkill(w http.ResponseWriter, id string, user User) {
-	state, err := s.store.Read()
+	state, err := s.store.ReadMetadata()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -206,7 +206,7 @@ func (s *WebServer) deleteSkill(w http.ResponseWriter, id string, user User) {
 }
 
 func (s *WebServer) skillDetail(w http.ResponseWriter, id string, user User) {
-	state, err := s.store.Read()
+	state, err := s.store.ReadMetadata()
 	if err != nil {
 		jsonResponse(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -307,7 +307,7 @@ func (s *WebServer) assignSkills(w http.ResponseWriter, r *http.Request, convers
 	jsonResponse(w, http.StatusOK, map[string]bool{"updated": true})
 }
 
-func (s *WebServer) skillsForParticipant(state State, conversation *Conversation, participant Participant, prompt string) ([]SkillDefinition, error) {
+func (s *WebServer) skillsForParticipant(state State, conversation *Conversation, participant Participant, intent string) ([]SkillDefinition, error) {
 	assigned, err := s.skills.Resolve(state, conversation.OwnerID, participant.SkillIDs)
 	if err != nil {
 		return nil, err
@@ -316,17 +316,21 @@ func (s *WebServer) skillsForParticipant(state State, conversation *Conversation
 		return assigned, nil
 	}
 	var recent strings.Builder
-	matchedMessages := 0
-	for index := len(state.ChatMessages) - 1; index >= 0 && matchedMessages < 12; index-- {
+	userMessages := []string{}
+	for index := len(state.ChatMessages) - 1; index >= 0 && len(userMessages) < 3; index-- {
 		message := state.ChatMessages[index]
-		if message.ConversationID != conversation.ID {
+		if message.ConversationID != conversation.ID || message.Kind != "user" {
 			continue
 		}
-		recent.WriteString(message.Body)
-		recent.WriteByte('\n')
-		matchedMessages++
+		userMessages = append(userMessages, message.Body)
 	}
-	recent.WriteString(prompt)
+	for index := len(userMessages) - 1; index >= 0; index-- {
+		recent.WriteString(userMessages[index])
+		recent.WriteByte('\n')
+	}
+	if strings.TrimSpace(intent) != "" && (len(userMessages) == 0 || strings.TrimSpace(userMessages[0]) != strings.TrimSpace(intent)) {
+		recent.WriteString(intent)
+	}
 	automatic, err := s.skills.AutoMatch(state, conversation.OwnerID, recent.String(), 2)
 	if err != nil {
 		return nil, err

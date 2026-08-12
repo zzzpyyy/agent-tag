@@ -76,6 +76,18 @@ func TestChatUsesConfiguredExecutableAndExtraArguments(t *testing.T) {
 	}
 }
 
+func TestClaudeDoesNotPassUnsupportedNameOption(t *testing.T) {
+	var call []string
+	runner := runnerFunc(func(name string, args []string) CommandResult {
+		call = append([]string{name}, args...)
+		return CommandResult{Stdout: `{"type":"result","result":"done"}` + "\n"}
+	})
+	_, _ = NewProviders(runner).Chat(context.Background(), RunRequest{Provider: "claude", Root: t.TempDir(), AgentName: "cc"})
+	if slices.Contains(call, "--name") {
+		t.Fatalf("Claude 2.x does not support --name: %v", call)
+	}
+}
+
 func TestNativeSessionsAreReused(t *testing.T) {
 	var calls [][]string
 	runner := runnerFunc(func(name string, args []string) CommandResult {
@@ -202,5 +214,22 @@ func TestProviderInstallPackagesAreExplicitlyAllowlisted(t *testing.T) {
 	}
 	if _, ok := ProviderInstallPackage("command"); ok {
 		t.Fatal("custom command provider must not be installable")
+	}
+}
+
+func TestProviderRegistryAndUsageObservation(t *testing.T) {
+	runner := runnerFunc(func(string, []string) CommandResult {
+		return CommandResult{Stdout: "{\"type\":\"result\",\"result\":\"done\",\"usage\":{\"input_tokens\":12,\"output_tokens\":8,\"total_cost_usd\":0.004}}\n"}
+	})
+	providers := NewProviders(runner)
+	if !providers.Supports("command", true) || len(providers.Descriptors()) != 4 {
+		t.Fatalf("descriptors=%+v", providers.Descriptors())
+	}
+	result, err := providers.Chat(context.Background(), RunRequest{Provider: "claude", Root: t.TempDir(), AgentName: "cc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Observation.Status != "completed" || result.Observation.Usage.TotalTokens != 20 || result.Observation.Usage.EstimatedCostUSD != 0.004 {
+		t.Fatalf("observation=%+v", result.Observation)
 	}
 }
