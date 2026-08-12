@@ -76,6 +76,20 @@ func TestChatUsesConfiguredExecutableAndExtraArguments(t *testing.T) {
 	}
 }
 
+func TestLaunchCommandUsesLoginShellAndPreservesArguments(t *testing.T) {
+	t.Setenv("SHELL", "/bin/zsh")
+	name, args, environment := providerProcess(RunRequest{LaunchCommand: "cccc", Root: "/tmp/project", AgentName: "cc"}, "claude", []string{"-p", "--model", "test"})
+	if name != "/bin/zsh" {
+		t.Fatalf("shell=%q", name)
+	}
+	if len(args) < 8 || !slices.Equal(args[len(args)-3:], []string{"-p", "--model", "test"}) {
+		t.Fatalf("args=%v", args)
+	}
+	if environment["AGENT_TAG_LAUNCH_COMMAND"] != "cccc" {
+		t.Fatalf("environment=%v", environment)
+	}
+}
+
 func TestClaudeDoesNotPassUnsupportedNameOption(t *testing.T) {
 	var call []string
 	runner := runnerFunc(func(name string, args []string) CommandResult {

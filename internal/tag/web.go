@@ -448,8 +448,9 @@ func (s *WebServer) updateProviderConfig(w http.ResponseWriter, r *http.Request,
 	}
 	input.Provider = provider
 	input.Executable = strings.TrimSpace(input.Executable)
+	input.LaunchCommand = strings.TrimSpace(input.LaunchCommand)
 	input.ExtraArgs = strings.TrimSpace(input.ExtraArgs)
-	if len(input.Executable) > 500 || len(input.ExtraArgs) > 2000 {
+	if len(input.Executable) > 500 || len(input.LaunchCommand) > 500 || len(input.ExtraArgs) > 2000 {
 		jsonResponse(w, http.StatusBadRequest, map[string]string{"error": "Provider 配置过长"})
 		return
 	}
@@ -2169,17 +2170,19 @@ func (s *WebServer) respondPrompt(ctx context.Context, id string, p Participant,
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(config.TimeoutSeconds)*time.Second)
 	defer cancel()
 	runStarted := time.Now()
+	artifactSnapshot := workspaceArtifactSnapshot(s.store.Root)
 	command := ""
 	if p.Command != nil {
 		command = *p.Command
 	}
-	result, err := s.providers.Chat(runCtx, RunRequest{Provider: p.Provider, Model: model, Executable: config.Executable, ExtraArgs: config.ExtraArgs, Command: command, Prompt: prompt, Root: s.store.Root, AgentName: p.Name, SessionID: p.SessionID, SkillPaths: skillPaths, AllowSkillExecution: conversation.AllowSkillExecution, SkillPermissions: conversation.SkillPermissions, OnProgress: progress})
+	result, err := s.providers.Chat(runCtx, RunRequest{Provider: p.Provider, Model: model, Executable: config.Executable, LaunchCommand: config.LaunchCommand, ExtraArgs: config.ExtraArgs, Command: command, Prompt: prompt, Root: s.store.Root, AgentName: p.Name, SessionID: p.SessionID, SkillPaths: skillPaths, AllowSkillExecution: conversation.AllowSkillExecution, SkillPermissions: conversation.SkillPermissions, OnProgress: progress})
 	if err != nil {
 		return err
 	}
 	if result.Observation.StartedAt == "" {
 		result = observeRun(RunRequest{Provider: p.Provider, Model: model}, runStarted, result, nil)
 	}
+	result.Artifacts = mergeRunArtifacts(result.Artifacts, discoverWorkspaceArtifacts(s.store.Root, artifactSnapshot))
 	if err := ctx.Err(); err != nil {
 		return err
 	}

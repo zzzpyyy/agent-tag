@@ -31,3 +31,21 @@ func TestArtifactStoreIsOwnerScoped(t *testing.T) {
 		t.Fatalf("artifacts=%+v err=%v", artifacts, err)
 	}
 }
+
+func TestWorkspaceArtifactDiscoveryFindsGeneratedDocumentsOnly(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := workspaceArtifactSnapshot(root)
+	if err := os.WriteFile(filepath.Join(root, "AI_Agent_介绍.docx"), []byte("document"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "helper.py"), []byte("print('skip')"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	artifacts := discoverWorkspaceArtifacts(root, before)
+	if len(artifacts) != 1 || filepath.Base(artifacts[0].Path) != "AI_Agent_介绍.docx" {
+		t.Fatalf("artifacts=%+v", artifacts)
+	}
+}

@@ -51,6 +51,7 @@ type User struct {
 type ProviderConfig struct {
 	Provider       string `json:"provider"`
 	Executable     string `json:"executable"`
+	LaunchCommand  string `json:"launchCommand"`
 	ExtraArgs      string `json:"extraArgs"`
 	TimeoutSeconds int    `json:"timeoutSeconds"`
 }
