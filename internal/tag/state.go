@@ -187,6 +187,9 @@ type ChatMessage struct {
 	Phase            string          `json:"phase,omitempty"`
 	ReviewRound      int             `json:"reviewRound,omitempty"`
 	SourceMessageIDs []string        `json:"sourceMessageIds,omitempty"`
+	ReplyToMessageID string          `json:"replyToMessageId,omitempty"`
+	ReplyToAuthor    string          `json:"replyToAuthor,omitempty"`
+	ReplyToExcerpt   string          `json:"replyToExcerpt,omitempty"`
 	Author           string          `json:"author"`
 	Provider         *string         `json:"provider"`
 	Kind             string          `json:"kind"`

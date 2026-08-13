@@ -611,6 +611,54 @@ func TestAgentToolArtifactIsCopiedAndSharedWithNextAgent(t *testing.T) {
 	}
 }
 
+func TestQuotedAgentMessageRoutesReplyAndPersistsReference(t *testing.T) {
+	root := t.TempDir()
+	if err := Init(root, "quoted-reply", false); err != nil {
+		t.Fatal(err)
+	}
+	store := &Store{Root: root}
+	runner := &fakeChat{}
+	web := NewWebServer(store, runner, fs.FS(fstest.MapFS{"index.html": {Data: []byte("ok")}}))
+	server := httptest.NewServer(web.Handler())
+	defer server.Close()
+	client := authenticatedClient(t, server.URL)
+	created := postJSON(t, client, server.URL+"/api/conversations", map[string]string{"title": "quote"})
+	var conversation Conversation
+	if err := json.NewDecoder(created.Body).Decode(&conversation); err != nil {
+		t.Fatal(err)
+	}
+	_ = created.Body.Close()
+	first := postJSON(t, client, server.URL+"/api/conversations/"+conversation.ID+"/messages", map[string]string{"body": "@cc explain"})
+	_ = first.Body.Close()
+	waitForMessages(t, store, 2)
+	waitInactive(t, web, conversation.ID)
+	messages, err := store.ConversationMessages(conversation.ID)
+	if err != nil || len(messages) != 2 {
+		t.Fatalf("messages=%+v err=%v", messages, err)
+	}
+	quoted := messages[1]
+	reply := postJSON(t, client, server.URL+"/api/conversations/"+conversation.ID+"/messages", map[string]any{"body": "继续展开", "replyToMessageId": quoted.ID})
+	if reply.StatusCode != http.StatusCreated {
+		t.Fatalf("reply status=%d", reply.StatusCode)
+	}
+	_ = reply.Body.Close()
+	waitForMessages(t, store, 4)
+	waitInactive(t, web, conversation.ID)
+	messages, err = store.ConversationMessages(conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userReply := messages[2]
+	if userReply.ReplyToMessageID != quoted.ID || userReply.ReplyToAuthor != "cc" || !strings.Contains(userReply.ReplyToExcerpt, "reply") {
+		t.Fatalf("quoted reply=%+v", userReply)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.calls) != 2 || runner.calls[1].AgentName != "cc" || !strings.Contains(runner.calls[1].Prompt, "Replying to cc") {
+		t.Fatalf("calls=%+v", runner.calls)
+	}
+}
+
 func TestAutoSkillModeMatchesLocalSkillAndInjectsIt(t *testing.T) {
 	root := t.TempDir()
 	if err := Init(root, "auto-skill", false); err != nil {
