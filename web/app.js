@@ -1,4 +1,5 @@
 import { renderMarkdown } from "./markdown.js";
+import { shouldSubmitMessage } from "./composer.js";
 
 const $ = (selector) => document.querySelector(selector);
 const els = {
@@ -28,6 +29,7 @@ let activeView = "chat";
 let titleEditing = false;
 let titleBeforeEdit = "";
 let replyingTo = null;
+let inputCompositionActive = false;
 let settingsScope = "conversation";
 let showArchived = false;
 let providerStatuses = null;
@@ -670,7 +672,9 @@ els.composer.onsubmit = async (event) => {
   catch (error) { els.input.value = text; replyingTo = reply; renderReplyPreview(); toast(error.message); }
 };
 els.input.oninput = () => { els.input.style.height = "auto"; els.input.style.height = `${Math.min(150, els.input.scrollHeight)}px`; };
-els.input.onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); els.composer.requestSubmit(); } };
+els.input.oncompositionstart = () => { inputCompositionActive = true; };
+els.input.oncompositionend = () => { inputCompositionActive = false; };
+els.input.onkeydown = (event) => { if (shouldSubmitMessage(event, inputCompositionActive)) { event.preventDefault(); els.composer.requestSubmit(); } };
 els.routeStatus.onclick = (event) => { const button = event.target.closest("[data-mention]"); if (button) { els.input.value += `${button.dataset.mention} `; els.input.focus(); } };
 els.relay.onchange = async () => {
   if (!activeId || els.relay.disabled) return;
