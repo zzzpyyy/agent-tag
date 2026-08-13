@@ -27,6 +27,7 @@ let renderedMessageCount = 0;
 let activeView = "chat";
 let titleEditing = false;
 let titleBeforeEdit = "";
+let replyingTo = null;
 let settingsScope = "conversation";
 let showArchived = false;
 let providerStatuses = null;
@@ -175,7 +176,9 @@ function render() {
   renderProviderStatuses();
   renderSkills(conversation);
   renderTasks();
-  if (!conversation) { titleEditing = false; els.title.contentEditable = "false"; els.title.classList.remove("editing"); els.title.textContent = "选择或新建一个对话"; els.members.innerHTML = ""; els.stack.innerHTML = ""; els.roundActions.hidden = true; return; }
+  if (!conversation) { replyingTo = null; renderReplyPreview(); titleEditing = false; els.title.contentEditable = "false"; els.title.classList.remove("editing"); els.title.textContent = "选择或新建一个对话"; els.members.innerHTML = ""; els.stack.innerHTML = ""; els.roundActions.hidden = true; return; }
+  if (replyingTo?.conversationId !== activeId) replyingTo = null;
+  renderReplyPreview();
   if (!titleEditing) els.title.textContent = conversation.title;
   els.stack.innerHTML = conversation.participants.map((p) => `<span class="mini-avatar ${p.provider} ${isProviderInstalled(p.provider) ? "" : "unavailable"}" title="${escapeHtml(p.name)}${isProviderInstalled(p.provider) ? "" : "（未安装）"}">${initials(p.name)}</span>`).join("");
   els.members.innerHTML = conversation.participants.map((p) => `<div class="member ${isProviderInstalled(p.provider) ? "" : "unavailable"}"><span class="member-avatar ${p.provider}">${initials(p.name)}</span><span><b>${escapeHtml(p.name)}</b><small>${providerLabel(p.provider)}${p.model ? ` · ${escapeHtml(p.model)}` : ""}</small></span><span class="member-flags">${isProviderInstalled(p.provider) ? "" : '<i class="provider-missing">未安装</i>'}${p.sessionId ? '<i class="session-live">SESSION</i>' : ""}${p.autoDiscuss ? '<i class="auto">AUTO</i>' : ""}</span><span class="member-actions"><button type="button" data-edit-agent="${escapeHtml(p.name)}" title="编辑">✎</button>${p.sessionId ? `<button type="button" data-reset-agent="${escapeHtml(p.name)}" title="重置会话">↻</button>` : ""}<button type="button" data-remove-agent="${escapeHtml(p.name)}" title="移除">×</button></span></div>`).join("");
@@ -198,7 +201,9 @@ function render() {
     const observation = message.observation; const usage = observation?.usage || {};
     const runInfo = observation ? `<div class="run-observation"><span>${((observation.durationMs || 0)/1000).toFixed(1)}s</span>${usage.totalTokens ? `<span>${usage.totalTokens.toLocaleString()} tokens</span>` : ""}${usage.estimatedCostUsd ? `<span>≈ $${usage.estimatedCostUsd.toFixed(4)}</span>` : ""}${observation.model ? `<span>${escapeHtml(observation.model)}</span>` : ""}</div>` : "";
     const phaseLabel = message.phase === "synthesis" ? '<i class="phase-badge">综合</i>' : message.phase === "review" ? `<i class="phase-badge">评议 ${message.reviewRound || 1}</i>` : "";
-    return `<article class="message ${user ? "user" : message.provider}"><span class="avatar">${user ? "ME" : initials(message.author)}</span><div class="message-content"><div class="message-meta"><span>${escapeHtml(message.author)}</span>${phaseLabel}<time>${time(message.createdAt)}</time></div>${process}${artifactsMarkup}${runInfo}<div class="bubble ${user ? "" : "markdown"}">${renderedBody}</div></div></article>`;
+    const quoted = message.replyToMessageId ? `<div class="quoted-message"><b>回复 ${escapeHtml(message.replyToAuthor || "消息")}</b><span>${escapeHtml(message.replyToExcerpt || "")}</span></div>` : "";
+    const replyAction = !user ? `<button class="message-reply" type="button" data-reply-message="${escapeHtml(message.id)}">引用</button>` : "";
+    return `<article class="message ${user ? "user" : message.provider}" data-message-id="${escapeHtml(message.id)}"><span class="avatar">${user ? "ME" : initials(message.author)}</span><div class="message-content"><div class="message-meta"><span>${escapeHtml(message.author)}</span>${phaseLabel}<time>${time(message.createdAt)}</time>${replyAction}</div>${process}${artifactsMarkup}${runInfo}${quoted}<div class="bubble ${user ? "" : "markdown"}">${renderedBody}</div></div></article>`;
   }).join("");
   const liveMarkup = liveReplies.map((reply) => {
     const steps = Array.isArray(reply.steps) ? reply.steps : [];
@@ -285,6 +290,17 @@ async function loadAudit() {
 }
 
 els.messages.onclick = async (event) => {
+  const reply = event.target.closest("[data-reply-message]");
+  if (reply && activeId) {
+    const allMessages = [...(olderMessages.get(activeId) || []), ...state.chatMessages.filter((item) => item.conversationId === activeId)];
+    const message = allMessages.find((item) => item.id === reply.dataset.replyMessage);
+    if (message) {
+      replyingTo = { conversationId:activeId, id:message.id, author:message.author, body:message.body };
+      renderReplyPreview();
+      els.input.focus();
+    }
+    return;
+  }
   const loadOlder = event.target.closest("[data-load-older]");
   if (loadOlder && activeId) {
     loadOlder.disabled = true;
@@ -313,6 +329,15 @@ els.messages.onclick = async (event) => {
   try { await api(`/api/conversations/${activeId}/participants/${encodeURIComponent(stop.dataset.stopAgent)}/cancel`, { method:"POST", body:"{}" }); await refresh(); }
   catch (error) { toast(error.message); stop.disabled = false; }
 };
+
+function renderReplyPreview() {
+  const preview = $("#reply-preview");
+  preview.hidden = !replyingTo;
+  if (!replyingTo) return;
+  $("#reply-preview-author").textContent = `回复 ${replyingTo.author}`;
+  $("#reply-preview-text").textContent = replyingTo.body.replace(/\s+/g, " ").trim().slice(0, 180);
+}
+$("#cancel-reply").onclick = () => { replyingTo = null; renderReplyPreview(); els.input.focus(); };
 
 function renderSkills(conversation) {
   const skills = state.skills || [];
@@ -638,10 +663,11 @@ els.composer.onsubmit = async (event) => {
     return;
   }
   const text = els.input.value.trim(); if (!text) return;
+  const reply = replyingTo;
   lastSubmitted.set(activeId, text);
-  els.input.value = ""; els.input.style.height = "auto";
-  try { await api(`/api/conversations/${activeId}/messages`, { method:"POST", body:JSON.stringify({ body:text }) }); await refresh(); }
-  catch (error) { els.input.value = text; toast(error.message); }
+  els.input.value = ""; els.input.style.height = "auto"; replyingTo = null; renderReplyPreview();
+  try { await api(`/api/conversations/${activeId}/messages`, { method:"POST", body:JSON.stringify({ body:text, replyToMessageId:reply?.id || "" }) }); await refresh(); }
+  catch (error) { els.input.value = text; replyingTo = reply; renderReplyPreview(); toast(error.message); }
 };
 els.input.oninput = () => { els.input.style.height = "auto"; els.input.style.height = `${Math.min(150, els.input.scrollHeight)}px`; };
 els.input.onkeydown = (event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); els.composer.requestSubmit(); } };

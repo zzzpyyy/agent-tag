@@ -57,3 +57,9 @@ test("conversation title is renamed inline instead of in the management dialog",
   assert.doesNotMatch(html, /id="manage-conversation-title"/);
   assert.match(css, /#conversation-title\.editing/);
 });
+
+test("messages can be quoted from an inline reply action", () => {
+  assert.match(html, /id="reply-preview"/);
+  assert.match(css, /\.message-reply/);
+  assert.match(css, /\.quoted-message/);
+});
